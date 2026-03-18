@@ -10,7 +10,7 @@ export default function App() {
     cursor: 'pointer',
     border: 'none',
     fontWeight: 600,
-    fontSize: 13,
+    fontSize: 13,     
     background: view === v ? '#1B3A5C' : '#e2e8f0',
     color: view === v ? '#fff' : '#4a5568',
     borderRadius: v === 'private' ? '8px 0 0 8px' : '0 8px 8px 0',
