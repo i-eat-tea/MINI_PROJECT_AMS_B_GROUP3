@@ -469,16 +469,15 @@ col = ['Grade1', 'Grade2', 'Grade3', 'Grade4', 'Grade5', 'Grade6', 'Grade7', 'Gr
 drop_out.index = col
 enroll.index = col
 repeat.index = col
-
 # Get years from columns
 years = sorted(drop_out.columns)
 
-# Create subplots: 1 row, 3 columns (one per year)
+# Create subplots: 3 rows, 1 column (one per year)
 fig = make_subplots(
-    rows=1, cols=len(years),
+    rows=len(years), cols=1,
     subplot_titles=[f'Year {y}' for y in years],
     shared_yaxes=True,
-    horizontal_spacing=0.1
+    vertical_spacing=0.1
 )
 
 # Define colors for each metric
@@ -488,8 +487,8 @@ colors = {
     'Dropout': 'orange'
 }
 
-for col_idx, year in enumerate(years, start=1):
-    show_legend = (col_idx == 1)
+for row_idx, year in enumerate(years, start=1):
+    show_legend = (row_idx == 1)
     
     # Add Enrollment area
     fig.add_trace(go.Scatter(
@@ -502,7 +501,7 @@ for col_idx, year in enumerate(years, start=1):
         line=dict(color=colors['Enrollment'], width=2),
         fill='tozeroy',
         hovertemplate="Enrollment: %{y:,}<extra></extra>",
-    ), row=1, col=col_idx)
+    ), row=row_idx, col=1)
     
     # Add Repeat area
     fig.add_trace(go.Scatter(
@@ -515,7 +514,7 @@ for col_idx, year in enumerate(years, start=1):
         line=dict(color=colors['Repeat'], width=2),
         fill='tozeroy',
         hovertemplate="Repeat: %{y:,}<extra></extra>",
-    ), row=1, col=col_idx)
+    ), row=row_idx, col=1)
     
     # Add Dropout area
     fig.add_trace(go.Scatter(
@@ -528,11 +527,11 @@ for col_idx, year in enumerate(years, start=1):
         line=dict(color=colors['Dropout'], width=2),
         fill='tozeroy',
         hovertemplate="Dropout: %{y:,}<extra></extra>",
-    ), row=1, col=col_idx)
+    ), row=row_idx, col=1)
 
 fig.update_layout(
-    height=500,
-    width=1400,
+    height=1200,
+    width=900,
     title_text='Enrollment, Repeat, and Dropout by Grade Level Across Years',
     legend=dict(
         orientation="v",
@@ -556,7 +555,7 @@ fig = px.scatter(
     hover_name="Province", 
     size="Classes", 
     size_max=50,
-    facet_col="Year",  # Separate by year
+    facet_row="Year",  # Separate by year in rows instead of columns
     title='School Enrollment, Total Enrollment & Classes by Year',
     labels={
         'Schools': 'Number of Schools (log scale)',
@@ -570,8 +569,209 @@ fig = px.scatter(
 
 fig.update_xaxes(type="log")
 fig.update_layout(
-    width=1200, 
-    height=500,
+    width=900, 
+    height=1200,  # Increase height for vertical layout
+    hovermode='closest',
+    font=dict(size=11),
+    showlegend=True,
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=0.99,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+st.plotly_chart(fig)
+teacher = df1[[c for c in df1.columns if re.match(r'T_', c) or re.match(r'Year', c) or re.match(r'type', c)] + ['Province','Schools', 'Classes']]
+teacher= teacher.groupby(['Year','Province']).agg({'T_Primary': 'sum', 'T_LSec': 'sum', 'T_USec': 'sum','T_Graduate': 'sum','T_PostGrad':'sum','T_PhD': 'sum','Schools': 'sum', 'Classes': 'sum'}).reset_index()
+# Reshape the data
+teacher_df = teacher.copy()
+
+# Calculate total teachers for each province/year
+teacher_df['Total_Teachers_All'] = (
+    teacher_df['T_Primary'] + teacher_df['T_LSec'] + teacher_df['T_USec'] + 
+    teacher_df['T_Graduate'] + teacher_df['T_PostGrad'] + teacher_df['T_PhD']
+)
+
+# Calculate classes per school
+teacher_df['Classes_Per_School'] = teacher_df['Classes'] / teacher_df['Schools']
+
+# Melt to get individual teacher types
+teacher_df_melted = teacher_df.melt(
+    id_vars=['Year', 'Province', 'Schools', 'Classes', 'Total_Teachers_All', 'Classes_Per_School'],
+    value_vars=['T_Primary', 'T_LSec', 'T_USec', 'T_Graduate', 'T_PostGrad', 'T_PhD'],
+    var_name='Teacher_Quality',
+    value_name='Teachers_By_Type'
+)
+
+# Remove rows where there are no teachers
+teacher_df_melted = teacher_df_melted[teacher_df_melted['Teachers_By_Type'] > 0]
+
+# Create the scatter plot
+fig = px.scatter(
+    teacher_df_melted,
+    x="Total_Teachers_All",
+    y="Classes_Per_School",
+    color="Teacher_Quality",
+    hover_name="Province",
+    size="Teachers_By_Type",  # Smaller circles for each teacher type
+    size_max=30,
+    facet_row="Year",
+    title='Teacher Quality Distribution: Total Teachers vs Class Density',
+    labels={
+        'Total_Teachers_All': 'Total Teachers (All Types Combined)',
+        'Classes_Per_School': 'Classes per School',
+        'Teacher_Quality': 'Teacher Quality Level',
+        'Teachers_By_Type': 'Teachers of This Type'
+    },
+    template='plotly_white'
+)
+
+fig.update_layout(
+    width=900,
+    height=1200,
+    hovermode='closest',
+    font=dict(size=11),
+    showlegend=True,
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=0.99,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+st.plotly_chart(fig)
+# Reshape the data
+teacher_df = teacher.copy()
+
+# Calculate total teachers for each province/year (PhD and PostGrad)
+teacher_df['t_phd + T_postgrad'] = (
+    teacher_df['T_PostGrad'] + teacher_df['T_PhD']
+)
+
+# Calculate classes per school
+teacher_df['Classes_Per_School'] = teacher_df['Classes'] / teacher_df['Schools']
+
+# Melt to get individual teacher types
+teacher_df_melted = teacher_df.melt(
+    id_vars=['Year', 'Province', 'Schools', 'Classes', 't_phd + T_postgrad', 'Classes_Per_School'],
+    value_vars=['T_PostGrad', 'T_PhD'],
+    var_name='Teacher_Quality',
+    value_name='Teachers_By_Type'
+)
+
+# Remove rows where there are no teachers
+teacher_df_melted = teacher_df_melted[teacher_df_melted['Teachers_By_Type'] > 0]
+
+# Create the scatter plot
+fig = px.scatter(
+    teacher_df_melted,
+    x="t_phd + T_postgrad",  # Updated x-axis reference
+    y="Classes_Per_School",
+    color="Teacher_Quality",
+    hover_name="Province",
+    size="Teachers_By_Type", 
+    size_max=30,
+    facet_row="Year",
+    title='Teacher Quality Distribution: Total Teachers vs Class Density',
+    labels={
+        't_phd + T_postgrad': 't_phd + T_postgrad', # Updated label
+        'Classes_Per_School': 'Classes per School',
+        'Teacher_Quality': 'Teacher Quality Level',
+        'Teachers_By_Type': 'Teachers of This Type'
+    },
+    template='plotly_white'
+)
+
+fig.update_layout(
+    width=900,
+    height=1200,
+    hovermode='closest',
+    font=dict(size=11),
+    showlegend=True,
+    legend=dict(
+        orientation="v",
+        yanchor="top",
+        y=0.99,
+        xanchor="left",
+        x=1.02
+    )
+)
+
+st.plotly_chart(fig)
+# Step 1: Select and group data
+failing = df1[[c for c in df1.columns if re.match(r'T_', c) or re.match(r'Year', c) or re.match(r'type', c) or re.match(r'.*_Repeaters_T', c)] + ['Province']]
+
+failing_df = failing.groupby(['Year','Province']).agg({
+    'T_Primary': 'sum', 
+    'T_LSec': 'sum', 
+    'T_USec': 'sum',
+    'T_Graduate': 'sum',
+    'T_PostGrad':'sum',
+    'T_PhD': 'sum',
+    'Grade_1_Repeaters_Total': 'sum', 
+    'Grade_2_Repeaters_Total': 'sum', 
+    'Grade_3_Repeaters_Total': 'sum', 
+    'Grade_4_Repeaters_Total': 'sum', 
+    'Grade_5_Repeaters_Total': 'sum', 
+    'Grade_6_Repeaters_Total': 'sum', 
+    'Grade_7_Repeaters_Total': 'sum', 
+    'Grade_8_Repeaters_Total': 'sum', 
+    'Grade_9_Repeaters_Total': 'sum', 
+    'Grade_10_Repeaters_Total': 'sum', 
+    'Grade_11_Repeaters_Total': 'sum', 
+    'Grade_12_Repeaters_Total': 'sum'
+}).reset_index()
+
+# Step 2: Calculate metrics with correct column names
+failing_df['Low_quality_Teachers'] = failing_df['T_Primary'] + failing_df['T_LSec']
+
+failing_df['Total_repeater'] = (
+    failing_df['Grade_1_Repeaters_Total'] + failing_df['Grade_2_Repeaters_Total'] + 
+    failing_df['Grade_3_Repeaters_Total'] + failing_df['Grade_4_Repeaters_Total'] + 
+    failing_df['Grade_5_Repeaters_Total'] + failing_df['Grade_6_Repeaters_Total'] + 
+    failing_df['Grade_7_Repeaters_Total'] + failing_df['Grade_8_Repeaters_Total'] + 
+    failing_df['Grade_9_Repeaters_Total'] + failing_df['Grade_10_Repeaters_Total'] + 
+    failing_df['Grade_11_Repeaters_Total'] + failing_df['Grade_12_Repeaters_Total']
+)
+
+# Step 3: Rest of your visualization code (unchanged)
+failing_df_melted = failing_df.melt(
+    id_vars=['Year', 'Province', 'Low_quality_Teachers', 'Total_repeater'],
+    value_vars=['T_Primary', 'T_LSec'],
+    var_name='Teacher_Quality',
+    value_name='Teachers_By_Type'
+)
+
+failing_df_melted = failing_df_melted[failing_df_melted['Teachers_By_Type'] > 0]
+
+# Create the scatter plot
+fig = px.scatter(
+    failing_df_melted,
+    x="Low_quality_Teachers",
+    y="Total_repeater",
+    color="Teacher_Quality",
+    hover_name="Province",
+    size="Teachers_By_Type",  # Smaller circles for each teacher type
+    size_max=30,
+    facet_row="Year",
+    title='Teacher Quality Distribution: Low Quality Teachers vs Total Repeaters',
+    labels={
+        'Low_quality_Teachers': 'Low Quality Teachers',
+        'Total_repeater': 'Total Repeaters',
+        'Teacher_Quality': 'Teacher Quality Level',
+        'Teachers_By_Type': 'Teachers of This Type'
+    },
+    template='plotly_white'
+)
+
+fig.update_layout(
+    width=900,
+    height=1200,
     hovermode='closest',
     font=dict(size=11),
     showlegend=True,
