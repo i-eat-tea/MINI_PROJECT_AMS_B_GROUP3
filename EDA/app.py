@@ -13,6 +13,7 @@ import plotly.express as px
 import streamlit as st
 st.title("Group 3 Data Analysis EDA DEMO")
 st.write("Design by a psychopath")
+st.title('Bar charts')
 df1 = pd.read_csv('final_clean.csv')
 total_schools = df1.groupby(['Year','type'])['Schools'].sum().reset_index()
 total_classes = df1.groupby(['Year','type'])['Classes'].sum().reset_index()
@@ -270,6 +271,7 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig)
+st.title('Cartogram')
 country_shapefile = gpd.read_file('map/khm_admbnda_adm1_gov.shx')
 country_shapefile = country_shapefile.replace({'Oddar Meanchey': 'Otdar Meanchey',
                                                'Tboung Khmum': 'Tbaung Khmum'
@@ -364,6 +366,7 @@ ax.set_title('Cambodia: School Growth by Province', fontsize=24, pad=30, fontwei
 ax.axis('off') 
 plt.tight_layout()
 st.pyplot(fig)
+st.title('Stacked Bar Charts')
 staff_lv = df1[[c for c in df1.columns if re.match(r'T_', c) or re.match(r'Year', c) or re.match(r'type', c)]]
 staff_lv = staff_lv.groupby(['Year','type']).agg({'T_Primary': 'sum', 'T_LSec': 'sum', 'T_USec': 'sum','T_Graduate': 'sum','T_Graduate':'sum','T_PhD': 'sum'}).reset_index()
 # Assuming your df is called 'df'
@@ -429,6 +432,7 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig)
+st.title('Area Charts')
 # Filter for public schools only
 df_public = df1[df1['type'] == 'public'].copy()
 
@@ -545,6 +549,7 @@ fig.update_layout(
 
 fig.update_xaxes(tickangle=-45)
 st.plotly_chart(fig)
+st.title('Scatter Plots')
 school_enrollment = df1[['Year','type','Schools', 'Total_Enrollment_Total','Province','Classes']]
 
 fig = px.scatter(
@@ -784,4 +789,223 @@ fig.update_layout(
     )
 )
 
+st.plotly_chart(fig)
+st.title('Time Series Area Charts')
+df2 = pd.read_csv('appendix.csv')
+school_time = df2[['Academic Year','school_pre','school_pri','school_l.sec','school_u.sec']]
+school_time.fillna(0, inplace=True)
+# Reset index if needed
+df = school_time.reset_index()
+df.rename(columns={"Academic Year": "Year"}, inplace=True)
+
+# Extract the starting year from "YYYY-YY" format
+df["Year"] = df["Year"].str.split('-').str[0].astype(int)
+
+# Define school types
+school_types = ["school_pre", "school_pri", "school_l.sec", "school_u.sec"]
+
+# Create overlapping traces on a single plot
+fig = go.Figure()
+
+# Colors
+colors = {
+    "school_pre": "blue",
+    "school_pri": "green",
+    "school_l.sec": "orange",
+    "school_u.sec": "red"
+}
+
+# Add traces for each school type
+for school in school_types:
+    fig.add_trace(go.Scatter(
+        x=df["Year"],
+        y=df[school],
+        mode='lines',
+        name=school.replace("_", " ").title(),
+        line=dict(color=colors[school], width=2),
+        fill='tozeroy',
+        hovertemplate=f"{school.replace('_', ' ').title()}: %{{y:,}}<extra></extra>",
+    ))
+
+# Layout
+fig.update_layout(
+    height=600,
+    width=1000,
+    title_text="School Growth by Type Over Time",
+    hovermode="x unified",
+    xaxis_title="Year",
+    yaxis_title="Count",
+    legend=dict(
+        orientation="v",
+        y=1,
+        x=1.02
+    ),
+    template="plotly_white"
+)
+
+fig.update_xaxes(tickangle=-45)
+
+# Streamlit
+st.plotly_chart(fig)
+class_time = df2[['Academic Year','class_pre','class_pri','class_l.sec','class_u.sec']]
+class_time.fillna(0, inplace=True)
+df = class_time.reset_index()
+df.rename(columns={"Academic Year": "Year"}, inplace=True)
+
+# Extract the starting year from "YYYY-YY" format
+df["Year"] = df["Year"].str.split('-').str[0].astype(int)
+
+# Define school types
+school_types = ["class_pre", "class_pri", "class_l.sec", "class_u.sec"]
+
+# Create overlapping traces on a single plot
+fig = go.Figure()
+
+# Colors
+colors = {
+    "class_pre": "blue",
+    "class_pri": "green",
+    "class_l.sec": "orange",
+    "class_u.sec": "red"
+}
+
+# Add traces for each school type
+for school in school_types:
+    fig.add_trace(go.Scatter(
+        x=df["Year"],
+        y=df[school],
+        mode='lines',
+        name=school.replace("_", " ").title(),
+        line=dict(color=colors[school], width=2),
+        fill='tozeroy',
+        hovertemplate=f"{school.replace('_', ' ').title()}: %{{y:,}}<extra></extra>",
+    ))
+
+# Layout
+fig.update_layout(
+    height=600,
+    width=1000,
+    title_text="Classroom Growth by Type Over Time",
+    hovermode="x unified",
+    xaxis_title="Year",
+    yaxis_title="Count",
+    legend=dict(
+        orientation="v",
+        y=1,
+        x=1.02
+    ),
+    template="plotly_white"
+)
+
+fig.update_xaxes(tickangle=-45)
+
+# Streamlit
+st.plotly_chart(fig)
+student_time = df2[['Academic Year','student_pre','student_pri','student_l.sec','student_u.sec']]
+student_time.fillna(0, inplace=True)
+df = student_time.reset_index()
+df.rename(columns={"Academic Year": "Year"}, inplace=True)
+
+# Extract the starting year from "YYYY-YY" format
+df["Year"] = df["Year"].str.split('-').str[0].astype(int)
+
+# Define school types
+school_types = ["student_pre", "student_pri", "student_l.sec", "student_u.sec"]
+
+# Create overlapping traces on a single plot
+fig = go.Figure()
+
+# Colors
+colors = {
+    "student_pre": "blue",
+    "student_pri": "green",
+    "student_l.sec": "orange",
+    "student_u.sec": "red"
+}
+
+# Add traces for each school type
+for school in school_types:
+    fig.add_trace(go.Scatter(
+        x=df["Year"],
+        y=df[school],
+        mode='lines',
+        name=school.replace("_", " ").title(),
+        line=dict(color=colors[school], width=2),
+        fill='tozeroy',
+        hovertemplate=f"{school.replace('_', ' ').title()}: %{{y:,}}<extra></extra>",
+    ))
+
+# Layout
+fig.update_layout(
+    height=600,
+    width=1000,
+    title_text="Student Growth by Type Over Time",
+    hovermode="x unified",
+    xaxis_title="Year",
+    yaxis_title="Count",
+    legend=dict(
+        orientation="v",
+        y=1,
+        x=1.02
+    ),
+    template="plotly_white"
+)
+
+fig.update_xaxes(tickangle=-45)
+
+# Streamlit
+st.plotly_chart(fig)
+staff_time = df2[['Academic Year','staff_pre','staff_pri','staff_l.sec','staff_u.sec']]
+staff_time.fillna(0, inplace=True)
+df = staff_time.reset_index()
+df.rename(columns={"Academic Year": "Year"}, inplace=True)
+
+# Extract the starting year from "YYYY-YY" format
+df["Year"] = df["Year"].str.split('-').str[0].astype(int)
+
+# Define school types
+school_types = ["staff_pre", "staff_pri", "staff_l.sec", "staff_u.sec"]
+
+# Create overlapping traces on a single plot
+fig = go.Figure()
+
+# Colors
+colors = {
+    "staff_pre": "blue",
+    "staff_pri": "green",
+    "staff_l.sec": "orange",
+    "staff_u.sec": "red"
+}
+
+# Add traces for each school type
+for school in school_types:
+    fig.add_trace(go.Scatter(
+        x=df["Year"],
+        y=df[school],
+        mode='lines',
+        name=school.replace("_", " ").title(),
+        line=dict(color=colors[school], width=2),
+        fill='tozeroy',
+        hovertemplate=f"{school.replace('_', ' ').title()}: %{{y:,}}<extra></extra>",
+    ))
+
+# Layout
+fig.update_layout(
+    height=600,
+    width=1000,
+    title_text="Staff Growth by Type Over Time",
+    hovermode="x unified",
+    xaxis_title="Year",
+    yaxis_title="Count",
+    legend=dict(
+        orientation="v",
+        y=1,
+        x=1.02
+    ),
+    template="plotly_white"
+)
+
+fig.update_xaxes(tickangle=-45)
+
+# Streamlit
 st.plotly_chart(fig)
