@@ -420,7 +420,7 @@ fig.update_layout(
     barmode='stack',
     height=500,
     width=1200,
-    title_text='Student Enrollment by Education Level and Type',
+    title_text='Teacher quiality distribution by year',
     legend=dict(
         orientation="v",
         yanchor="top",
@@ -752,7 +752,7 @@ failing_df_melted = failing_df.melt(
     value_name='Teachers_By_Type'
 )
 
-failing_df_melted = failing_df_melted[failing_df_melted['Teachers_By_Type'] > 0]
+failing_df_melted = failing_df_melted[failing_df_melted['Teachers_By_Type'] > 0]    
 
 # Create the scatter plot
 fig = px.scatter(
