@@ -64,11 +64,11 @@ dff = df[df['year'].isin(selected_years)]
 if page == "📊 Overview & KPIs":
     st.title("📊 Overview & KPIs")
     st.markdown("---")
-
-    latest = dff['year'].max()
-    prev = latest - 1
+    all_sorted_years = sorted(dff['year'].unique())
+    latest = all_sorted_years[-1]
+    prev = all_sorted_years[0] if len(all_sorted_years) >= 2 else None
     d_latest = dff[dff['year'] == latest]
-    d_prev = dff[dff['year'] == prev] if prev in dff['year'].values else d_latest
+    d_prev = dff[dff['year'] == prev] if prev else d_latest
 
     def safe_sum(d, col):
         return d[col].sum() if col in d.columns else 0
@@ -139,7 +139,24 @@ if page == "📊 Overview & KPIs":
         fig.update_layout(title='Enrollment by School Level Over Time',
                           template='plotly_white', hovermode='x unified', height=350)
         st.plotly_chart(fig, use_container_width=True)
-
+    # Teacher overtime
+        enroll_trend = dff.groupby('year')[['teaching_staff_total', 'teaching_staff_female']].sum().reset_index()
+        enroll_trend['enrollment_boy'] = enroll_trend['teaching_staff_total'] - enroll_trend['teaching_staff_female']
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=enroll_trend['year'], y=enroll_trend['teaching_staff_total'],
+                                 name='Total', mode='lines+markers', line=dict(color='#2196F3', width=2)))
+        fig.add_trace(go.Scatter(x=enroll_trend['year'], y=enroll_trend['teaching_staff_female'],
+                                 name='Female', mode='lines+markers', line=dict(color='#E91E63', width=2)))
+        fig.update_layout(title='Total Teacher Over Time', template='plotly_white',
+                          hovermode='x unified', height=350)
+        st.plotly_chart(fig, use_container_width=True)
+    # Class over time
+        class_trend = dff.groupby('year')['num_classes'].sum().reset_index()
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=class_trend['year'], y=class_trend['num_classes'],
+                             marker_color="#18a03a", name='Class'))
+        fig.update_layout(title='Total Class Over Time', template='plotly_white', height=350)
+        st.plotly_chart(fig, use_container_width=True)
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 2 — Schools & Infrastructure
 # ══════════════════════════════════════════════════════════════════════════════
