@@ -21,12 +21,10 @@ st.set_page_config(
 def load_data():
     df = pd.read_csv('cleaned_new_data.csv')
     df2 = pd.read_csv('appendix.csv')
-    # If already has clean names, just ensure year/province exist
     if 'year' not in df.columns and 'Year' in df.columns:
         df = df.rename(columns={'Year': 'year', 'Province': 'province'})
     if 'row_id' in df.columns:
         df = df.drop(columns=['row_id'])
-
     return df, df2
 
 df, df2 = load_data()
@@ -55,8 +53,17 @@ with st.sidebar:
     st.markdown("---")
     st.caption("Design by a psychopath")
 
+# Guard: if no years selected, stop early
+if not selected_years:
+    st.warning("Please select at least one year from the sidebar.")
+    st.stop()
+
 # Filter
 dff = df[df['year'].isin(selected_years)]
+
+# Derived year helpers — used across ALL pages
+latest_year = max(selected_years)
+earliest_year = min(selected_years)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 1 — Overview & KPIs
@@ -64,11 +71,9 @@ dff = df[df['year'].isin(selected_years)]
 if page == "📊 Overview & KPIs":
     st.title("📊 Overview & KPIs")
     st.markdown("---")
-    all_sorted_years = sorted(dff['year'].unique())
-    latest = all_sorted_years[-1]
-    prev = all_sorted_years[0] if len(all_sorted_years) >= 2 else None
-    d_latest = dff[dff['year'] == latest]
-    d_prev = dff[dff['year'] == prev] if prev else d_latest
+
+    d_latest = dff[dff['year'] == latest_year]
+    d_prev = dff[dff['year'] == earliest_year]
 
     def safe_sum(d, col):
         return d[col].sum() if col in d.columns else 0
@@ -100,9 +105,7 @@ if page == "📊 Overview & KPIs":
     col_left, col_right = st.columns(2)
 
     with col_left:
-        # Enrollment trend over time
         enroll_trend = dff.groupby('year')[['enrollment_total', 'enrollment_girl']].sum().reset_index()
-        enroll_trend['enrollment_boy'] = enroll_trend['enrollment_total'] - enroll_trend['enrollment_girl']
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=enroll_trend['year'], y=enroll_trend['enrollment_total'],
                                  name='Total', mode='lines+markers', line=dict(color='#2196F3', width=2)))
@@ -113,7 +116,6 @@ if page == "📊 Overview & KPIs":
         st.plotly_chart(fig, use_container_width=True)
 
     with col_right:
-        # Schools over time
         school_trend = dff.groupby('year')['num_schools'].sum().reset_index()
         fig = go.Figure()
         fig.add_trace(go.Bar(x=school_trend['year'], y=school_trend['num_schools'],
@@ -121,7 +123,6 @@ if page == "📊 Overview & KPIs":
         fig.update_layout(title='Total Schools Over Time', template='plotly_white', height=350)
         st.plotly_chart(fig, use_container_width=True)
 
-    # Enrollment distribution by school level
     level_cols = {
         'Primary': 'primary_enrollment_total',
         'Lower Sec': 'lower_sec_enrollment_total',
@@ -139,9 +140,8 @@ if page == "📊 Overview & KPIs":
         fig.update_layout(title='Enrollment by School Level Over Time',
                           template='plotly_white', hovermode='x unified', height=350)
         st.plotly_chart(fig, use_container_width=True)
-    # Teacher overtime
+
         enroll_trend = dff.groupby('year')[['teaching_staff_total', 'teaching_staff_female']].sum().reset_index()
-        enroll_trend['enrollment_boy'] = enroll_trend['teaching_staff_total'] - enroll_trend['teaching_staff_female']
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=enroll_trend['year'], y=enroll_trend['teaching_staff_total'],
                                  name='Total', mode='lines+markers', line=dict(color='#2196F3', width=2)))
@@ -150,13 +150,14 @@ if page == "📊 Overview & KPIs":
         fig.update_layout(title='Total Teacher Over Time', template='plotly_white',
                           hovermode='x unified', height=350)
         st.plotly_chart(fig, use_container_width=True)
-    # Class over time
+
         class_trend = dff.groupby('year')['num_classes'].sum().reset_index()
         fig = go.Figure()
         fig.add_trace(go.Bar(x=class_trend['year'], y=class_trend['num_classes'],
                              marker_color="#18a03a", name='Class'))
         fig.update_layout(title='Total Class Over Time', template='plotly_white', height=350)
         st.plotly_chart(fig, use_container_width=True)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 2 — Schools & Infrastructure
 # ══════════════════════════════════════════════════════════════════════════════
@@ -167,7 +168,6 @@ elif page == "🏫 Schools & Infrastructure":
     tab1, tab2, tab3 = st.tabs(["School & Class Growth", "Building Quality", "Facilities"])
 
     with tab1:
-        # Schools by level over time
         level_school_cols = {
             'Preschool': 'num_schools_preschool',
             'Primary': 'num_schools_primary',
@@ -186,7 +186,6 @@ elif page == "🏫 Schools & Infrastructure":
                               template='plotly_white', hovermode='x unified', height=400)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Classes over time
         if 'num_classes' in dff.columns:
             c_df = dff.groupby('year')['num_classes'].sum().reset_index()
             fig = px.line(c_df, x='year', y='num_classes', markers=True,
@@ -211,7 +210,6 @@ elif page == "🏫 Schools & Infrastructure":
                               template='plotly_white', height=400)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Poor condition buildings
         poor_cols = {
             'Poor Floor': 'buildings_poor_floor',
             'Poor Roof': 'buildings_poor_roof',
@@ -232,8 +230,6 @@ elif page == "🏫 Schools & Infrastructure":
         col_left, col_right = st.columns(2)
 
         with col_left:
-            # Schools without water/latrine by province (latest year)
-            latest_year = dff['year'].max()
             d_latest = dff[dff['year'] == latest_year]
             if 'schools_without_water' in d_latest.columns:
                 water_df = d_latest.groupby('province')[['schools_without_water', 'schools_without_latrine']].sum()
@@ -248,7 +244,6 @@ elif page == "🏫 Schools & Infrastructure":
                 st.plotly_chart(fig, use_container_width=True)
 
         with col_right:
-            # Schools with office/library
             if 'schools_with_library' in dff.columns:
                 lib_df = dff.groupby('year')[['schools_with_office', 'schools_with_library']].sum().reset_index()
                 fig = go.Figure()
@@ -260,7 +255,6 @@ elif page == "🏫 Schools & Infrastructure":
                                   hovermode='x unified', height=350)
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Classrooms poor condition
             cr_cols = {'Poor Floor': 'classrooms_poor_floor',
                        'Poor Roof': 'classrooms_poor_roof',
                        'Poor Wall': 'classrooms_poor_wall'}
@@ -295,8 +289,6 @@ elif page == "👩‍🎓 Enrollment & Gender":
                           template='plotly_white', hovermode='x unified', height=400)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Grade-level enrollment funnel (latest year)
-        latest_year = dff['year'].max()
         grade_enroll_cols = [f'g{i}_enrollment_total' for i in range(1, 13)]
         existing_grades = [c for c in grade_enroll_cols if c in dff.columns]
         if existing_grades:
@@ -311,7 +303,6 @@ elif page == "👩‍🎓 Enrollment & Gender":
             st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        # Girl % over time
         girl_pct = dff.groupby('year').agg(
             total=('enrollment_total', 'sum'),
             girls=('enrollment_girl', 'sum')
@@ -325,8 +316,6 @@ elif page == "👩‍🎓 Enrollment & Gender":
         fig.update_layout(yaxis_ticksuffix='%', height=350)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Girl % by province (latest year)
-        latest_year = dff['year'].max()
         d_latest = dff[dff['year'] == latest_year]
         prov_gender = d_latest.groupby('province').agg(
             total=('enrollment_total', 'sum'),
@@ -351,7 +340,6 @@ elif page == "👩‍🎓 Enrollment & Gender":
         }
         existing_ov = {k: v for k, v in overage_cols.items() if v in dff.columns}
         if existing_ov:
-            # Overage trend
             ov_trend = dff.groupby('year')[[*existing_ov.values()]].mean().reset_index()
             fig = go.Figure()
             for label, col in existing_ov.items():
@@ -362,9 +350,8 @@ elif page == "👩‍🎓 Enrollment & Gender":
                               yaxis_ticksuffix='%', height=350)
             st.plotly_chart(fig, use_container_width=True)
 
-            # Overage heatmap by province
-            latest_year = dff['year'].max()
-            ov_prov = dff[dff['year'] == latest_year].groupby('province')[[*existing_ov.values()]].mean()
+            d_latest = dff[dff['year'] == latest_year]
+            ov_prov = d_latest.groupby('province')[[*existing_ov.values()]].mean()
             ov_prov.columns = list(existing_ov.keys())
             fig = px.imshow(ov_prov, aspect='auto', color_continuous_scale='YlOrRd',
                            title=f'Overage Enrollment % by Province ({latest_year})',
@@ -380,11 +367,9 @@ elif page == "📉 Student Flow":
     st.caption("Dropout, repetition, and promotion across grades")
     st.markdown("---")
 
-    tab1, tab2, tab3 = st.tabs(["Grade Flow", "Dropout Heatmap", "Repeater Rates"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Grade Flow", "Dropout Heatmap", "Repeater Rates", "Dropout Drivers"])
 
     with tab1:
-        # Promotion / Repetition / Dropout grouped bar (latest year)
-        latest_year = dff['year'].max()
         flow_data = []
         for i in range(1, 13):
             p_col, r_col, d_col = f'g{i}_promotion', f'g{i}_repetition', f'g{i}_dropout'
@@ -409,7 +394,6 @@ elif page == "📉 Student Flow":
                               template='plotly_white', hovermode='x unified', height=400)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Dropout trend over years
         dropout_trend = []
         for i in range(1, 13):
             col = f'g{i}_dropout'
@@ -428,7 +412,6 @@ elif page == "📉 Student Flow":
             st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        # Dropout heatmap province × year (averaged across grades)
         dropout_cols = [f'g{i}_dropout' for i in range(1, 13) if f'g{i}_dropout' in dff.columns]
         if dropout_cols:
             dff_copy = dff.copy()
@@ -441,10 +424,7 @@ elif page == "📉 Student Flow":
             fig.update_layout(height=600)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Grade × province heatmap (latest year)
-        latest_year = dff['year'].max()
-        d_latest = dff[dff['year'] == latest_year]
-        if dropout_cols:
+            d_latest = dff[dff['year'] == latest_year]
             prov_grade = d_latest.groupby('province')[dropout_cols].mean()
             prov_grade.columns = [f'G{i+1}' for i in range(len(dropout_cols))]
             fig = px.imshow(prov_grade, aspect='auto', color_continuous_scale='YlOrRd',
@@ -473,7 +453,6 @@ elif page == "📉 Student Flow":
                               yaxis_ticksuffix='%', height=350)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Girl vs total repeater rate
         girl_rep_cols = {
             'Primary (Total)': 'pct_repeaters_total_primary',
             'Primary (Girl)': 'pct_repeaters_girl_primary',
@@ -493,6 +472,79 @@ elif page == "📉 Student Flow":
                               template='plotly_white', hovermode='x unified',
                               yaxis_ticksuffix='%', height=350)
             st.plotly_chart(fig, use_container_width=True)
+
+    with tab4:
+        st.caption("⚠️ 2021 excluded — government policy suspended exams, data unreliable.")
+
+        dropout_cols = [f'g{i}_dropout' for i in range(1, 13) if f'g{i}_dropout' in dff.columns]
+        dff_clean = dff[dff['year'] != 2021].copy()
+        dff_clean['avg_dropout'] = dff_clean[dropout_cols].mean(axis=1)
+
+        raw_cols = [c for c in [
+            'num_schools', 'num_classes',
+            'teaching_staff_total', 'teaching_staff_female',
+            'teaching_staff_edu_primary', 'teaching_staff_edu_lower_sec',
+            'teaching_staff_edu_upper_sec', 'teaching_staff_edu_graduate',
+            'teaching_staff_edu_postgrad', 'teaching_staff_edu_phd',
+            'teaching_staff_no_pedagogy_primary', 'teaching_staff_no_pedagogy_lower_sec',
+            'teaching_staff_no_pedagogy_upper_sec',
+            'schools_without_water', 'schools_without_latrine',
+            'concrete_brick_buildings', 'wooden_buildings', 'bamboo_buildings',
+            'buildings_poor_floor', 'buildings_poor_roof', 'buildings_poor_wall',
+            'classrooms_poor_floor', 'classrooms_poor_roof', 'classrooms_poor_wall',
+            'schools_with_office', 'schools_with_library',
+            'parent_assoc_exists', 'parent_assoc_held_meeting',
+            'community_teachers', 'principal_avg_age',
+            'principal_avg_service_years', 'principal_upper_sec_plus_edu',
+            'pb_fund_per_student_riel',
+        ] if c in dff_clean.columns]
+
+        ratio_cols = [c for c in [
+            'pupil_teacher_ratio', 'pupil_class_ratio', 'pupil_classroom_ratio',
+            'teachers_per_school', 'pupils_per_school',
+            'pct_schools_without_water', 'pct_schools_without_toilet',
+            'pct_schools_in_pagoda', 'pct_schools_two_shift',
+            'classroom_area_per_pupil_m2',
+            'pct_female_staff', 'pct_non_teaching_staff',
+            'pct_overage_enrollment_primary', 'pct_overage_enrollment_lower_sec',
+            'pct_overage_enrollment_upper_sec',
+            'gross_admission_rate_total', 'net_admission_rate_total',
+            'pb_fund_per_student_riel',
+        ] if c in dff_clean.columns]
+
+        prov_agg = dff_clean.groupby('province')[raw_cols + ratio_cols + ['avg_dropout']].mean()
+
+        # heatmap 1 — raw counts
+        corr_raw = prov_agg[raw_cols + ['avg_dropout']].corr()[['avg_dropout']].drop('avg_dropout')
+        corr_raw.columns = ['correlation']
+        corr_raw = corr_raw.sort_values('correlation')
+
+        fig = px.imshow(
+            corr_raw,
+            color_continuous_scale='RdBu_r',
+            zmin=-1, zmax=1,
+            aspect='auto',
+            title='Raw Features × Avg Dropout Rate (by Province, excl. 2021)',
+            text_auto='.2f',
+        )
+        fig.update_layout(height=700, coloraxis_colorbar=dict(title='r'))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # heatmap 2 — ratio/engineered features
+        corr_ratio = prov_agg[ratio_cols + ['avg_dropout']].corr()[['avg_dropout']].drop('avg_dropout')
+        corr_ratio.columns = ['correlation']
+        corr_ratio = corr_ratio.sort_values('correlation')
+
+        fig2 = px.imshow(
+            corr_ratio,
+            color_continuous_scale='RdBu_r',
+            zmin=-1, zmax=1,
+            aspect='auto',
+            title='Ratio/Engineered Features × Avg Dropout Rate (by Province, excl. 2021)',
+            text_auto='.2f',
+        )
+        fig2.update_layout(height=500, coloraxis_colorbar=dict(title='r'))
+        st.plotly_chart(fig2, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 5 — Teaching Staff & Quality
@@ -519,7 +571,6 @@ elif page == "👨‍🏫 Teaching Staff & Quality":
                           template='plotly_white', hovermode='x unified', height=380)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Female staff % trend
         staff_trend['female_pct'] = staff_trend['female'] / staff_trend['total'] * 100
         fig = px.line(staff_trend, x='year', y='female_pct', markers=True,
                      title='Female Teaching Staff % Over Time',
@@ -550,7 +601,6 @@ elif page == "👨‍🏫 Teaching Staff & Quality":
                               template='plotly_white', hovermode='x unified', height=400)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Low vs high quality split
         if 'teaching_staff_edu_primary' in dff.columns and 'teaching_staff_edu_graduate' in dff.columns:
             qual = dff.groupby('year').agg(
                 low=('teaching_staff_edu_primary', 'sum'),
@@ -578,7 +628,6 @@ elif page == "👨‍🏫 Teaching Staff & Quality":
             st.plotly_chart(fig, use_container_width=True)
 
     with tab3:
-        # Pupil-teacher ratio over time
         if 'pupil_teacher_ratio' in dff.columns:
             ptr = dff.groupby('year')['pupil_teacher_ratio'].mean().reset_index()
             fig = px.line(ptr, x='year', y='pupil_teacher_ratio', markers=True,
@@ -588,10 +637,8 @@ elif page == "👨‍🏫 Teaching Staff & Quality":
             fig.update_layout(height=330)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Teacher quality vs repeaters by province
         dropout_cols = [f'g{i}_dropout' for i in range(1, 13) if f'g{i}_dropout' in dff.columns]
         if dropout_cols and 'teaching_staff_edu_primary' in dff.columns:
-            latest_year = dff['year'].max()
             d_l = dff[dff['year'] == latest_year].copy()
             d_l['avg_dropout'] = d_l[dropout_cols].mean(axis=1)
             d_l['low_qual'] = d_l.get('teaching_staff_edu_primary', 0) + d_l.get('teaching_staff_edu_lower_sec', 0)
@@ -618,13 +665,13 @@ elif page == "🗺️ Provincial Deep Dive":
     st.title("🗺️ Provincial Deep Dive")
     st.markdown("---")
 
-    selected_province = st.selectbox("Select Province", sorted(df['province'].unique()))
+    # FIX: use dff (filtered) not df for province list
+    selected_province = st.selectbox("Select Province", sorted(dff['province'].unique()))
     df_prov = dff[dff['province'] == selected_province]
 
     st.subheader(f"📍 {selected_province}")
     st.markdown("---")
 
-    latest_year = df_prov['year'].max()
     d_l = df_prov[df_prov['year'] == latest_year]
 
     def sv(d, col):
@@ -646,7 +693,6 @@ elif page == "🗺️ Provincial Deep Dive":
     col_left, col_right = st.columns(2)
 
     with col_left:
-        # Enrollment trend
         enroll_trend = df_prov.groupby('year')[['enrollment_total', 'enrollment_girl']].sum().reset_index()
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=enroll_trend['year'], y=enroll_trend['enrollment_total'],
@@ -657,7 +703,6 @@ elif page == "🗺️ Provincial Deep Dive":
                           hovermode='x unified', height=300)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Dropout trend
         dropout_cols = [f'g{i}_dropout' for i in range(1, 13) if f'g{i}_dropout' in df_prov.columns]
         if dropout_cols:
             drop_trend = df_prov.groupby('year')[dropout_cols].mean().reset_index()
@@ -670,7 +715,6 @@ elif page == "🗺️ Provincial Deep Dive":
             st.plotly_chart(fig, use_container_width=True)
 
     with col_right:
-        # Staff quality
         edu_cols = {
             'Primary': 'teaching_staff_edu_primary',
             'Lower Sec': 'teaching_staff_edu_lower_sec',
@@ -691,7 +735,6 @@ elif page == "🗺️ Provincial Deep Dive":
                               template='plotly_white', height=300)
             st.plotly_chart(fig, use_container_width=True)
 
-        # Infrastructure
         infra_cols = {
             'Concrete': 'concrete_brick_buildings',
             'Wooden': 'wooden_buildings',
@@ -709,7 +752,6 @@ elif page == "🗺️ Provincial Deep Dive":
                               template='plotly_white', height=300)
             st.plotly_chart(fig, use_container_width=True)
 
-    # Grade flow for this province (latest year)
     st.markdown("---")
     st.subheader(f"Grade Flow ({latest_year})")
     flow_data = []
@@ -742,7 +784,6 @@ elif page == "📈 Long-term Trends":
     st.caption("Historical data — longer time horizon")
     st.markdown("---")
 
-    # Prep appendix
     df2_clean = df2.copy()
     df2_clean.rename(columns={'Academic Year': 'Year'}, inplace=True)
     df2_clean['Year'] = df2_clean['Year'].astype(str).str.split('-').str[0].astype(int)
