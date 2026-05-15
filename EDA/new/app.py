@@ -44,6 +44,7 @@ with st.sidebar:
         "👨‍🏫 Teaching Staff & Quality",
         "🗺️ Provincial Deep Dive",
         "📈 Long-term Trends",
+        "🔗 Relationship Analysis",
     ])
 
     st.markdown("---")
@@ -367,7 +368,7 @@ elif page == "📉 Student Flow":
     st.caption("Dropout, repetition, and promotion across grades")
     st.markdown("---")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Grade Flow", "Dropout Heatmap", "Repeater Rates", "Dropout Drivers"])
+    tab1, tab2, tab3 = st.tabs(["Grade Flow", "Dropout Heatmap", "Repeater Rates"])
 
     with tab1:
         flow_data = []
@@ -472,80 +473,6 @@ elif page == "📉 Student Flow":
                               template='plotly_white', hovermode='x unified',
                               yaxis_ticksuffix='%', height=350)
             st.plotly_chart(fig, use_container_width=True)
-
-    with tab4:
-        st.caption("⚠️ 2021 excluded — government policy suspended exams, data unreliable.")
-
-        dropout_cols = [f'g{i}_dropout' for i in range(1, 13) if f'g{i}_dropout' in dff.columns]
-        dff_clean = dff[dff['year'] != 2021].copy()
-        dff_clean['avg_dropout'] = dff_clean[dropout_cols].mean(axis=1)
-
-        raw_cols = [c for c in [
-            'num_schools', 'num_classes',
-            'teaching_staff_total', 'teaching_staff_female',
-            'teaching_staff_edu_primary', 'teaching_staff_edu_lower_sec',
-            'teaching_staff_edu_upper_sec', 'teaching_staff_edu_graduate',
-            'teaching_staff_edu_postgrad', 'teaching_staff_edu_phd',
-            'teaching_staff_no_pedagogy_primary', 'teaching_staff_no_pedagogy_lower_sec',
-            'teaching_staff_no_pedagogy_upper_sec',
-            'schools_without_water', 'schools_without_latrine',
-            'concrete_brick_buildings', 'wooden_buildings', 'bamboo_buildings',
-            'buildings_poor_floor', 'buildings_poor_roof', 'buildings_poor_wall',
-            'classrooms_poor_floor', 'classrooms_poor_roof', 'classrooms_poor_wall',
-            'schools_with_office', 'schools_with_library',
-            'parent_assoc_exists', 'parent_assoc_held_meeting',
-            'community_teachers', 'principal_avg_age',
-            'principal_avg_service_years', 'principal_upper_sec_plus_edu',
-            'pb_fund_per_student_riel',
-        ] if c in dff_clean.columns]
-
-        ratio_cols = [c for c in [
-            'pupil_teacher_ratio', 'pupil_class_ratio', 'pupil_classroom_ratio',
-            'teachers_per_school', 'pupils_per_school',
-            'pct_schools_without_water', 'pct_schools_without_toilet',
-            'pct_schools_in_pagoda', 'pct_schools_two_shift',
-            'classroom_area_per_pupil_m2',
-            'pct_female_staff', 'pct_non_teaching_staff',
-            'pct_overage_enrollment_primary', 'pct_overage_enrollment_lower_sec',
-            'pct_overage_enrollment_upper_sec',
-            'gross_admission_rate_total', 'net_admission_rate_total',
-            'pb_fund_per_student_riel',
-        ] if c in dff_clean.columns]
-
-        prov_agg = dff_clean.groupby('province')[raw_cols + ratio_cols + ['avg_dropout']].mean()
-
-        # heatmap 1 — raw counts
-        corr_raw = prov_agg[raw_cols + ['avg_dropout']].corr()[['avg_dropout']].drop('avg_dropout')
-        corr_raw.columns = ['correlation']
-        corr_raw = corr_raw.sort_values('correlation')
-
-        fig = px.imshow(
-            corr_raw,
-            color_continuous_scale='RdBu_r',
-            zmin=-1, zmax=1,
-            aspect='auto',
-            title='Raw Features × Avg Dropout Rate (by Province, excl. 2021)',
-            text_auto='.2f',
-        )
-        fig.update_layout(height=700, coloraxis_colorbar=dict(title='r'))
-        st.plotly_chart(fig, use_container_width=True)
-
-        # heatmap 2 — ratio/engineered features
-        corr_ratio = prov_agg[ratio_cols + ['avg_dropout']].corr()[['avg_dropout']].drop('avg_dropout')
-        corr_ratio.columns = ['correlation']
-        corr_ratio = corr_ratio.sort_values('correlation')
-
-        fig2 = px.imshow(
-            corr_ratio,
-            color_continuous_scale='RdBu_r',
-            zmin=-1, zmax=1,
-            aspect='auto',
-            title='Ratio/Engineered Features × Avg Dropout Rate (by Province, excl. 2021)',
-            text_auto='.2f',
-        )
-        fig2.update_layout(height=500, coloraxis_colorbar=dict(title='r'))
-        st.plotly_chart(fig2, use_container_width=True)
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 5 — Teaching Staff & Quality
 # ══════════════════════════════════════════════════════════════════════════════
@@ -657,6 +584,7 @@ elif page == "👨‍🏫 Teaching Staff & Quality":
                             color_continuous_scale='Reds')
             fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 6 — Provincial Deep Dive
@@ -777,7 +705,177 @@ elif page == "🗺️ Provincial Deep Dive":
         st.plotly_chart(fig, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGE 7 — Long-term Trends (appendix)
+# PAGE 7 — Relationship Analysis
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "🔗 Relationship Analysis":
+    st.title("🔗 Relationship Analysis")
+    st.caption("⚠️ 2021 excluded — government policy anomaly.")
+    st.markdown("---")
+
+    dff_clean = dff[dff['year'] != 2021].copy()
+    prov_agg = dff_clean.groupby('province').mean(numeric_only=True)
+
+    def corr_heatmap(target, feature_cols, title):
+        cols = [c for c in feature_cols if c in prov_agg.columns and c != target]
+        corr = prov_agg[cols + [target]].corr()[[target]].drop(target)
+        corr.columns = ['correlation']
+        corr = corr.sort_values('correlation')
+        fig = px.imshow(
+            corr,
+            color_continuous_scale='RdBu_r',
+            zmin=-1, zmax=1,
+            aspect='auto',
+            text_auto='.2f',
+            title=title,
+        )
+        fig.update_layout(
+            height=max(300, len(cols) * 22),
+            coloraxis_colorbar=dict(title='r'),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    tab1, tab2, tab3, tap4 = st.tabs(["Enrollment", "Teaching Staff", "Fund per Student","Drop out"])
+
+    with tab1:
+        enrollment_raw = [
+            'num_classes', 'num_classrooms', 'num_buildings_total', 'num_rooms_total',
+            'num_schools', 'concrete_brick_buildings', 'wooden_buildings', 'bamboo_buildings',
+            'schools_with_office', 'schools_with_library',
+            'schools_without_water', 'schools_without_latrine',
+            'satellite_schools', 'pagoda_primary_schools',
+            'parent_assoc_exists', 'parent_assoc_members_total',
+            'funding_community', 'funding_govt_building', 'funding_ios_ngos',
+            'pop_aged6_total', 'pop_aged6_11_total', 'pop_aged6_11_girl',
+            'pop_aged12_14_total', 'pop_aged15_17_total',
+        ]
+        enrollment_ratio = [
+            'pupil_class_ratio', 'pupil_classroom_ratio', 'pupils_per_school',
+            'pct_schools_without_water', 'pct_schools_without_toilet',
+            'pct_schools_in_pagoda',
+            'gross_admission_rate_total', 'net_admission_rate_total',
+            'pct_students_primary', 'pct_students_lower_sec', 'pct_students_upper_sec',
+        ]
+        corr_heatmap('enrollment_total', enrollment_raw,
+                     'Raw Features × Total Enrollment (by Province, excl. 2021)')
+        corr_heatmap('enrollment_total', enrollment_ratio,
+                     'Ratio Features × Total Enrollment (by Province, excl. 2021)')
+
+    with tab2:
+        teacher_raw = [
+            'num_schools', 'num_classes', 'enrollment_total',
+            'non_teaching_staff_total', 'teaching_staff_female',
+            'teaching_staff_edu_primary', 'teaching_staff_edu_lower_sec',
+            'teaching_staff_edu_upper_sec', 'teaching_staff_edu_graduate',
+            'teaching_staff_edu_postgrad', 'teaching_staff_edu_phd',
+            'teaching_staff_no_pedagogy_primary', 'teaching_staff_no_pedagogy_lower_sec',
+            'teaching_staff_no_pedagogy_upper_sec',
+            'num_schools_primary', 'num_schools_college', 'num_schools_lycee',
+            'principal_avg_age', 'principal_avg_service_years',
+            'principal_upper_sec_plus_edu', 'principal_female',
+            'community_teachers', 'teaching_monks',
+        ]
+        teacher_ratio = [
+            'pupil_teacher_ratio', 'pupil_staff_ratio',
+            'teachers_per_school', 'staff_per_school', 'classes_per_school',
+            'pct_female_staff', 'pct_non_teaching_staff',
+        ]
+        corr_heatmap('teaching_staff_total', teacher_raw,
+                     'Raw Features × Total Teaching Staff (by Province, excl. 2021)')
+        corr_heatmap('teaching_staff_total', teacher_ratio,
+                     'Ratio Features × Total Teaching Staff (by Province, excl. 2021)')
+
+    with tab3:
+        riel_raw = [
+        "num_schools", "num_classes", "classes_in_pagoda","total_staff_total", "total_staff_female",#general
+        "schools_without_water", "schools_without_latrine",#school condition
+        "principal_avg_age", "principal_avg_service_years", "principal_upper_sec_plus_edu", "principal_female",#leadership
+        "pct_overage_enrollment_primary", "pct_overage_enrollment_lower_sec", "pct_overage_enrollment_upper_sec",
+        "teaching_staff_edu_primary", "teaching_staff_edu_lower_sec", "teaching_staff_edu_upper_sec",#over age enrollment
+        "teaching_staff_edu_graduate", "teaching_staff_edu_postgrad", "teaching_staff_edu_phd",#teacher quality
+        "concrete_brick_buildings", "concrete_brick_rooms","wooden_buildings", "buildings_poor_floor", "buildings_poor_roof", "buildings_poor_wall",#classromm quality
+        "classrooms_poor_floor", "classrooms_poor_roof", "classrooms_poor_wall","schools_with_office", "schools_with_library",#inferstructure
+        "gross_admission_rate_total", "net_admission_rate_total", "pct_overage_admission_total", "transition_rate_lower_sec_total", "transition_rate_upper_sec_total"# admission 
+        
+        
+        ]
+        riel_ratio = [
+        "pupils_per_school", "teachers_per_school", "staff_per_school",
+        "buildings_per_school", "rooms_per_school", "classrooms_per_school", "classes_per_school",
+        "pct_schools_two_shift", "pct_schools_in_pagoda", "pct_schools_without_water", "pct_schools_without_toilet",
+        "pupil_teacher_ratio", "pupil_staff_ratio", "pupil_class_ratio", "pupil_classroom_ratio",
+        "classes_per_classroom", "classroom_area_per_pupil_m2"
+        ]
+        corr_heatmap('pb_fund_per_student_riel', riel_raw,
+                     'Raw Features × Fund per Student (by Province, excl. 2021)')
+        corr_heatmap('pb_fund_per_student_riel', riel_ratio,
+                     'Ratio Features × Fund per Student (by Province, excl. 2021)')
+
+    with tap4:
+        st.caption("⚠️ 2021 excluded — government policy suspended exams, data unreliable.")
+
+        dropout_cols = [f'g{i}_dropout' for i in range(1, 13) if f'g{i}_dropout' in dff.columns]
+        dff_clean = dff[dff['year'] != 2021].copy()
+        dff_clean['avg_dropout'] = dff_clean[dropout_cols].mean(axis=1)
+
+        raw_cols = [c for c in [    
+        "num_schools", "num_classes", "classes_in_pagoda","total_staff_total", "total_staff_female",#general
+        "schools_without_water", "schools_without_latrine",#school condition
+        "principal_avg_age", "principal_avg_service_years", "principal_upper_sec_plus_edu", "principal_female",#leadership
+        "pct_overage_enrollment_primary", "pct_overage_enrollment_lower_sec", "pct_overage_enrollment_upper_sec",
+        "teaching_staff_edu_primary", "teaching_staff_edu_lower_sec", "teaching_staff_edu_upper_sec",#over age enrollment
+        "teaching_staff_edu_graduate", "teaching_staff_edu_postgrad", "teaching_staff_edu_phd",#teacher quality
+        "concrete_brick_buildings", "concrete_brick_rooms","wooden_buildings", "buildings_poor_floor", "buildings_poor_roof", "buildings_poor_wall",#classromm quality
+        "classrooms_poor_floor", "classrooms_poor_roof", "classrooms_poor_wall","schools_with_office", "schools_with_library",#inferstructure
+        "funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",#funding
+        ] if c in dff_clean.columns]
+
+        ratio_cols = [c for c in [
+        "pupils_per_school", "teachers_per_school", "staff_per_school",
+        "buildings_per_school", "rooms_per_school", "classrooms_per_school", "classes_per_school",
+        "pct_schools_two_shift", "pct_schools_in_pagoda", "pct_schools_without_water", "pct_schools_without_toilet",
+        "pupil_teacher_ratio", "pupil_staff_ratio", "pupil_class_ratio", "pupil_classroom_ratio",
+        "classes_per_classroom", "classroom_area_per_pupil_m2"
+
+        ] if c in dff_clean.columns]
+
+        prov_agg = dff_clean.groupby('province')[raw_cols + ratio_cols + ['avg_dropout']].mean()
+
+        # heatmap 1 — raw counts
+        corr_raw = prov_agg[raw_cols + ['avg_dropout']].corr()[['avg_dropout']].drop('avg_dropout')
+        corr_raw.columns = ['correlation']
+        corr_raw = corr_raw.sort_values('correlation')
+
+        fig = px.imshow(
+            corr_raw,
+            color_continuous_scale='RdBu_r',
+            zmin=-1, zmax=1,
+            aspect='auto',
+            title='Raw Features × Avg Dropout Rate (by Province, excl. 2021)',
+            text_auto='.2f',
+        )
+        fig.update_layout(height=700, coloraxis_colorbar=dict(title='r'))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # heatmap 2 — ratio/engineered features
+        corr_ratio = prov_agg[ratio_cols + ['avg_dropout']].corr()[['avg_dropout']].drop('avg_dropout')
+        corr_ratio.columns = ['correlation']
+        corr_ratio = corr_ratio.sort_values('correlation')
+
+        fig2 = px.imshow(
+            corr_ratio,
+            color_continuous_scale='RdBu_r',
+            zmin=-1, zmax=1,
+            aspect='auto',
+            title='Ratio/Engineered Features × Avg Dropout Rate (by Province, excl. 2021)',
+            text_auto='.2f',
+        )
+        fig2.update_layout(height=500, coloraxis_colorbar=dict(title='r'))
+        st.plotly_chart(fig2, use_container_width=True)        
+
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 8 — Long-term Trends (appendix)
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "📈 Long-term Trends":
     st.title("📈 Long-term Trends")
