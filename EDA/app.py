@@ -738,14 +738,13 @@ elif page == "🔗 Relationship Analysis":
 
     with tab1:
         enrollment_raw = [
-            "num_schools", "classes_in_pagoda", #general
-            "pct_schools_without_toilet", "pct_schools_without_water", "principal_avg_service_years", "pb_fund_per_school_riel", #school condition
-            "pct_overage_enrollment_primary", "pct_overage_enrollment_lower_sec", "pct_overage_enrollment_upper_sec", #over age enrollment
-            "teaching_staff_edu_graduate", #teacher quality (kept as the proxy for high education)
-            "concrete_brick_rooms", "wooden_buildings", #classroom quality (both kept to contrast growth vs. dropout risk!)
-            "classrooms_poor_roof", "schools_with_office", "schools_with_library", #infrastructure
-            "funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos", #funding
-            "pupil_teacher_ratio", "pupil_classroom_ratio", "classrooms_per_school", "pct_schools_two_shift" #important ratio
+        "num_schools", "classes_in_pagoda","total_staff_total",#general
+        "pct_schools_without_toilet", "pct_schools_without_water","principal_avg_service_years,"#school condition
+        "teaching_staff_edu_primary", "teaching_staff_edu_lower_sec", "teaching_staff_edu_upper_sec","teaching_staff_edu_graduate", "teaching_staff_edu_postgrad", "teaching_staff_edu_phd",#teacher quality
+        "concrete_brick_buildings", "concrete_brick_rooms","wooden_buildings",#classromm quality
+        "classrooms_poor_floor", "classrooms_poor_roof", "classrooms_poor_wall","schools_with_office", "schools_with_library",#inferstructure
+        "funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",#funding
+        "pupil_teacher_ratio","pupil_classroom_ratio","classrooms_per_school","pct_schools_two_shift"#important ratio
         ]
         corr_heatmap('enrollment_total', enrollment_raw,
                      'Raw Features × Total Enrollment (by Province, excl. 2021)')
