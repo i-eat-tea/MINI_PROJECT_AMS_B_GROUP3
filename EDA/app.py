@@ -511,7 +511,7 @@ elif page == "Relationship Analysis":
 
     with tab1:
         enrollment_raw = [
-        "num_schools", "num_classes", "classes_in_pagoda","repeaters_total","total_staff_total",
+        "num_schools", "num_classes", "classes_in_pagoda","repeaters_total",
         "two_shift_schools_lycee", "floating_schools_lycee", "schools_in_pagoda_lycee", "attached_preschool_lycee","schools_without_water", "schools_without_latrine",
         "principal_avg_age", "principal_avg_service_years", "principal_upper_sec_plus_edu", "principal_female",
         "num_primary_schools", "num_cluster_schools", "satellite_schools",
@@ -571,7 +571,7 @@ elif page == "Relationship Analysis":
         "pupil_teacher_ratio", "pupil_staff_ratio", "pupil_class_ratio", "pupil_classroom_ratio",
         "classes_per_classroom", "classroom_area_per_pupil_m2",
         "gross_admission_rate_total","net_admission_rate_total","pct_overage_admission_total","transition_rate_lower_sec_total","transition_rate_upper_sec_total",
-        "avg_repetition_rate","avg_repetition_rate"
+        "avg_repetition_rate"
         
         ]
         corr_heatmap('avg_dropout_rate', dropout_raw,
