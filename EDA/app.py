@@ -8,6 +8,7 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.patheffects import withStroke
+import seaborn as sns
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -480,6 +481,34 @@ elif page == "Relationship Analysis":
     prov_agg['avg_dropout_rate'] = prov_agg[dropout_cols].mean(axis=1)
     promotion_cols = [f'g{i}_promotion' for i in range(1, 13)]
     prov_agg['avg_promotion_rate'] = prov_agg[promotion_cols].mean(axis=1)
+    prov_agg['bad_qual_teacher']= prov_agg[["teaching_staff_edu_primary","teaching_staff_edu_lower_sec","teaching_staff_edu_upper_sec"]].sum(axis=1)
+    prov_agg['good_qual_teacher']= prov_agg[["teaching_staff_edu_graduate","teaching_staff_edu_postgrad","teaching_staff_edu_phd"]].sum(axis=1)
+        
+    edu_levels = ["primary", "lower_sec", "upper_sec", "graduate", "postgrad", "phd"]
+    weights = {"primary": 1, "lower_sec": 2, "upper_sec": 3, "graduate": 4, "postgrad": 5, "phd": 6}
+
+    # No-pedagogy ratio
+    prov_agg["no_pedagogy_ratio"] = (
+        prov_agg[[f"teaching_staff_no_pedagogy_{l}" for l in edu_levels]].sum(axis=1)
+        / prov_agg["teaching_staff_total"].replace(0, pd.NA)
+    )
+
+    # High/low qual ratio (teaching staff)
+    prov_agg["teaching_high_qual_ratio"] = (
+        prov_agg[[f"teaching_staff_edu_{l}" for l in ["graduate", "postgrad", "phd"]]].sum(axis=1)
+        / prov_agg["teaching_staff_total"].replace(0, pd.NA)
+    )
+    prov_agg["teaching_low_qual_ratio"] = (
+        prov_agg[[f"teaching_staff_edu_{l}" for l in ["primary", "lower_sec", "upper_sec"]]].sum(axis=1)
+        / prov_agg["teaching_staff_total"].replace(0, pd.NA)
+    )
+    prov_agg['kids_population']=prov_agg[["pop_aged6_total","pop_aged6_11_total","pop_aged12_14_total","pop_aged15_17_total"]].sum(axis=1)
+
+    # Qualification index per staff group
+    for prefix in ["teaching_staff_edu", "non_teaching_staff_edu", "teaching_staff_no_pedagogy"]:
+        weighted_sum = sum(prov_agg[f"{prefix}_{level}"] * w for level, w in weights.items())
+        total = prov_agg[[f"{prefix}_{level}" for level in edu_levels]].sum(axis=1).replace(0, pd.NA)
+        prov_agg[f"{prefix}_qual_index"] = weighted_sum / total
 
     def corr_heatmap(target, feature_cols, title):
         cols = [c for c in feature_cols if c in prov_agg.columns and c != target]
@@ -488,7 +517,7 @@ elif page == "Relationship Analysis":
         
         # Get the 5 largest positive and 5 largest negative correlations
         top_positive = corr.nlargest(5, 'correlation')
-        top_negative = corr.nsmallest(5, 'correlation')
+        top_negative = corr.nsmallest(10, 'correlation')
         
         # Combine and sort them
         corr = pd.concat([top_negative, top_positive]).drop_duplicates().sort_values('correlation')
@@ -507,116 +536,168 @@ elif page == "Relationship Analysis":
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    tab1, tab2 = st.tabs(["target","Funds"])
+    def plot_features_grid(df, features, target):
+        # Ensure column names match lowercase
+        df.columns = [c.lower() for c in df.columns]
+        features = [f.lower() for f in features]
+        target = target.lower()
+
+        # --- Apply Dark Theme Styling ---
+        plt.style.use("dark_background")
+        # Match Streamlit's dark background roughly (#0e1117)
+        rc_params = {
+            "figure.facecolor": "#11141a",
+            "axes.facecolor": "#11141a",
+            "axes.edgecolor": "#31333f",
+            "grid.color": "#31333f",
+            "text.color": "#ffffff",
+            "axes.labelcolor": "#a3a8b4",
+            "xtick.color": "#a3a8b4",
+            "ytick.color": "#a3a8b4",
+        }
+        plt.rcParams.update(rc_params)
+
+        # Setup the 5x3 grid
+        fig, axes = plt.subplots(5, 3, figsize=(20, 25))
+        fig.suptitle(
+            f"Features vs {target.replace('_', ' ').title()}",
+            fontsize=22,
+            color="#ffffff",
+            weight="bold",
+        )
+
+        # Vibrant neon/pastel palette that pops beautifully on dark backgrounds
+        colors = sns.color_palette("coolwarm", len(features))
+
+        # Loop through features and populate the subplots dynamically
+        for i, feature in enumerate(features):
+            row = i // 3
+            col = i % 3
+            ax = axes[row, col]
+
+            if feature in df.columns:
+                sns.regplot(
+                    data=df,
+                    x=feature,
+                    y=target,
+                    ax=ax,
+                    scatter_kws={"alpha": 0.6, "color": colors[i], "s": 40},
+                    # Semi-transparent confidence interval area
+                    line_kws={"color": "#ff4b4b", "linewidth": 2},
+                )
+                ax.set_title(feature, fontsize=12, color="#ffffff", pad=10)
+                ax.set_xlabel(feature, fontsize=10)
+                ax.set_ylabel(target, fontsize=10)
+                ax.grid(True, linestyle="--", alpha=0.1)  # Subtle grid lines
+            else:
+                ax.text(
+                    0.5,
+                    0.5,
+                    f"Feature '{feature}'\nnot found",
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    color="#ff4b4b",
+                )
+                ax.axis("off")
+
+        # Adjust layout for neat spacing
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+        # Render natively in streamlit with matching background
+        st.pyplot(fig, clear_figure=True)
+
+
+# --- Example Call ---
+# plot_features_grid(df_cleaned, features_list, target='enrollment_total')
+    tab1, tab2 = st.tabs(["heatmap","scatter"])
 
     with tab1:
         enrollment_raw = [
-        "num_schools", "num_classes", "classes_in_pagoda","repeaters_total",
-        "two_shift_schools_lycee", "floating_schools_lycee", "schools_in_pagoda_lycee", "attached_preschool_lycee","schools_without_water", "schools_without_latrine",
-        "principal_avg_age", "principal_avg_service_years", "principal_upper_sec_plus_edu", "principal_female",
-        "num_primary_schools", "num_cluster_schools", "satellite_schools",
-        #"pct_overage_enrollment_primary", "pct_overage_enrollment_lower_sec", "pct_overage_enrollment_upper_sec",
-        #"teaching_staff_edu_primary", "teaching_staff_edu_lower_sec", "teaching_staff_edu_upper_sec",
-        #"teaching_staff_edu_graduate", "teaching_staff_edu_postgrad", "teaching_staff_edu_phd",
-        #"non_teaching_staff_edu_primary", "non_teaching_staff_edu_lower_sec", "non_teaching_staff_edu_upper_sec",
-        #"non_teaching_staff_edu_graduate", "non_teaching_staff_edu_postgrad", "non_teaching_staff_edu_phd",
-        #"teaching_staff_no_pedagogy_primary", "teaching_staff_no_pedagogy_lower_sec", "teaching_staff_no_pedagogy_upper_sec",
-        #"teaching_staff_no_pedagogy_graduate", "teaching_staff_no_pedagogy_postgrad", "teaching_staff_no_pedagogy_phd",
-        "num_buildings_total", "num_rooms_total",
-        "concrete_brick_buildings","wooden_buildings","bamboo_buildings",
-        "buildings_repaired", "buildings_constructed",
-        "buildings_poor_floor", "buildings_poor_roof", "buildings_poor_wall",
-        "schools_with_office", "schools_with_library",
-        "school_area_land_m2", "school_area_playground_m2", "classroom_area_per_student", "preschool_with_sport_facility",
-        "sport_volleyball", "sport_football", "sport_basketball", "sport_climbing_ropes",
-        "sport_shotput", "sport_high_jump", "sport_long_jump", "sport_running",
-        "pb_fund_per_student_riel", "pb_fund_per_school_riel",
-        "funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",
-        "pupils_per_school", "teachers_per_school", "staff_per_school",
-        "buildings_per_school", "rooms_per_school", "classrooms_per_school", "classes_per_school",
-        "pupil_teacher_ratio", "pupil_staff_ratio", "pupil_class_ratio", "pupil_classroom_ratio",
-        "classes_per_classroom", "classroom_area_per_pupil_m2",
-        "gross_admission_rate_total","net_admission_rate_total","pct_overage_admission_total","transition_rate_lower_sec_total","transition_rate_upper_sec_total",
-        "avg_repetition_rate","avg_dropout_rate","avg_repetition_rate"
+        "num_classrooms","wooden_rooms", "bamboo_buildings", "bamboo_rooms","schools_with_office", "schools_with_library",#Infrastructure & Buildings
+        "schools_without_water", "schools_without_latrine","classroom_area_per_student","preschool_with_sport_facility",#Amenities & Environment
+        "total_staff_total","principal_avg_service_years","bad_qual_teacher","good_qual_teacher",# Human Resources & Professional Qualifications
+        "pb_fund_per_school_riel","funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",#funding
+        "pupil_teacher_ratio","pupil_classroom_ratio","pct_schools_two_shift","pct_schools_in_pagoda",# Supply/Demand Matching Ratios
+        "kids_population",# Target Population Demographics
         ]
         corr_heatmap('enrollment_total', enrollment_raw,
                      'Raw Features × Total Enrollment (by Province, excl. 2021)')
-        corr_heatmap('teaching_staff_total', enrollment_raw,
-                     'Raw Features × Total Teaching Staff (by Province, excl. 2021)')
         dropout_raw = [
-        "num_schools", "num_classes", "classes_in_pagoda","repeaters_total","total_staff_total",
-        "two_shift_schools_lycee", "floating_schools_lycee", "schools_in_pagoda_lycee", "attached_preschool_lycee","schools_without_water", "schools_without_latrine",
-        "principal_avg_age", "principal_avg_service_years", "principal_upper_sec_plus_edu", "principal_female",
-        "num_primary_schools", "num_cluster_schools", "satellite_schools",
-        "pct_overage_enrollment_primary", "pct_overage_enrollment_lower_sec", "pct_overage_enrollment_upper_sec",
-        "teaching_staff_edu_primary", "teaching_staff_edu_lower_sec",# "teaching_staff_edu_upper_sec",
-        "teaching_staff_edu_graduate", 
-        "teaching_staff_edu_postgrad", "teaching_staff_edu_phd",
-        "non_teaching_staff_edu_primary", "non_teaching_staff_edu_lower_sec", "non_teaching_staff_edu_upper_sec",
-        "non_teaching_staff_edu_graduate", "non_teaching_staff_edu_postgrad", "non_teaching_staff_edu_phd",
-        "teaching_staff_no_pedagogy_primary", "teaching_staff_no_pedagogy_lower_sec", "teaching_staff_no_pedagogy_upper_sec",
-        "teaching_staff_no_pedagogy_graduate", "teaching_staff_no_pedagogy_postgrad", "teaching_staff_no_pedagogy_phd",
-        "num_buildings_total", "num_rooms_total",
-        "concrete_brick_buildings","wooden_buildings","bamboo_buildings",
-        "buildings_repaired", "buildings_constructed",
-        "buildings_poor_floor", "buildings_poor_roof", "buildings_poor_wall",
-        "schools_with_office", "schools_with_library",
-        "school_area_land_m2", "school_area_playground_m2", "classroom_area_per_student", "preschool_with_sport_facility",
-        "sport_volleyball", "sport_football", "sport_basketball", "sport_climbing_ropes",
-        "sport_shotput", "sport_high_jump", "sport_long_jump", "sport_running",
-        "pb_fund_per_student_riel", "pb_fund_per_school_riel",
-        "funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",
-        "pupils_per_school", "teachers_per_school", "staff_per_school",
-        "buildings_per_school", "rooms_per_school", "classrooms_per_school", "classes_per_school",
-        "pupil_teacher_ratio", "pupil_staff_ratio", "pupil_class_ratio", "pupil_classroom_ratio",
-        "classes_per_classroom", "classroom_area_per_pupil_m2",
-        "gross_admission_rate_total","net_admission_rate_total","pct_overage_admission_total","transition_rate_lower_sec_total","transition_rate_upper_sec_total",
-        "avg_repetition_rate"
-        
+        "num_classrooms","wooden_rooms", "bamboo_buildings", "bamboo_rooms","schools_with_office", "schools_with_library",#Infrastructure & Buildings
+        "schools_without_water", "schools_without_latrine","classroom_area_per_student","preschool_with_sport_facility",#Amenities & Environment
+        "total_staff_total","principal_avg_service_years","bad_qual_teacher","good_qual_teacher",# Human Resources & Professional Qualifications
+        "pb_fund_per_school_riel","funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",#funding
+        "pupil_teacher_ratio","pupil_classroom_ratio","pct_schools_two_shift","pct_schools_in_pagoda",# Supply/Demand Matching Ratios
+        "pct_overage_enrollment_primary", "pct_overage_enrollment_lower_sec", "pct_overage_enrollment_upper_sec","kids_population"# Target Population Demographics
         ]
         corr_heatmap('avg_dropout_rate', dropout_raw,
                      'Raw Features × Avg drop out rate (by Province, excl. 2021)')
+        teacher_qual_raw = [
+        "num_classrooms","wooden_rooms", "bamboo_buildings", "bamboo_rooms","schools_with_office", "schools_with_library",#Infrastructure & Buildings
+        "schools_without_water", "schools_without_latrine","classroom_area_per_student","preschool_with_sport_facility",#Amenities & Environment
+        "pb_fund_per_school_riel","funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",#funding
+        "pupil_teacher_ratio","pupil_classroom_ratio","pct_schools_two_shift","pct_schools_in_pagoda",# Supply/Demand Matching Ratios
+        "kids_population    "# Target Population Demographics
+        ]
+        corr_heatmap('teaching_staff_edu_qual_index', teacher_qual_raw,
+                     'Raw Features × teacher quality (by Province, excl. 2021)')
 
     with tab2:
-        income_raw = [
-        "num_schools", "num_classes", "classes_in_pagoda","repeaters_total","total_staff_total",
-        "two_shift_schools_lycee", "floating_schools_lycee", "schools_in_pagoda_lycee", "attached_preschool_lycee","schools_without_water", "schools_without_latrine",
-        "principal_avg_age", "principal_avg_service_years", "principal_upper_sec_plus_edu", "principal_female",
-        "", "num_cluster_schools", "satellite_schools",
-        "pct_overage_enrollment_primary", #"pct_overage_enrollment_lower_sec", "pct_overage_enrollment_upper_sec",
-        "teaching_staff_edu_primary", "teaching_staff_edu_lower_sec", "teaching_staff_edu_upper_sec",
-        "teaching_staff_edu_graduate", 
-        "teaching_staff_edu_postgrad", "teaching_staff_edu_phd",
-        "non_teaching_staff_edu_primary", "non_teaching_staff_edu_lower_sec", "non_teaching_staff_edu_upper_sec",
-        "non_teaching_staff_edu_graduate", "non_teaching_staff_edu_postgrad", "non_teaching_staff_edu_phd",
-        "teaching_staff_no_pedagogy_primary", "teaching_staff_no_pedagogy_lower_sec", "teaching_staff_no_pedagogy_upper_sec",
-        "teaching_staff_no_pedagogy_graduate", "teaching_staff_no_pedagogy_postgrad", "teaching_staff_no_pedagogy_phd",
-        "num_buildings_total", "num_rooms_total",
-        "concrete_brick_buildings","wooden_buildings","bamboo_buildings",
-        "buildings_repaired", "buildings_constructed",
-        "buildings_poor_floor", "buildings_poor_roof", "buildings_poor_wall",
-        "schools_with_office", "schools_with_library",
-        "school_area_land_m2", "school_area_playground_m2", "classroom_area_per_student", "preschool_with_sport_facility",
-        "sport_volleyball", "sport_football", "sport_basketball", "sport_climbing_ropes",
-        "sport_shotput", "sport_high_jump", "sport_long_jump", "sport_running",
-        "pupils_per_school", "teachers_per_school", "staff_per_school",
-        "buildings_per_school", "rooms_per_school", "classrooms_per_school", "classes_per_school",
-        "pupil_teacher_ratio", "pupil_staff_ratio", "pupil_class_ratio", "pupil_classroom_ratio",
-        "classes_per_classroom", "classroom_area_per_pupil_m2",
-        "gross_admission_rate_total","net_admission_rate_total","pct_overage_admission_total","transition_rate_lower_sec_total","transition_rate_upper_sec_total",
-        "avg_repetition_rate","avg_repetition_rate"]
-        corr_heatmap('funding_school_income', income_raw,
-                     'Raw Features × school income (by Province, excl. 2021)')
-        corr_heatmap('funding_community', income_raw,
-                     'Raw Features × funding_community (by Province, excl. 2021)')
-        corr_heatmap('funding_govt_building', income_raw,
-                     'Raw Features × funding_govt_building (by Province, excl. 2021)')
-        corr_heatmap('funding_abroad', income_raw,
-                     'Raw Features × funding_abroad (by Province, excl. 2021)')
-        corr_heatmap('funding_school_income', income_raw,
-                     'Raw Features × funding_ios_ngos (by Province, excl. 2021)')
-
-
+        features_list_enrollment = [
+            "classroom_area_per_student",
+            "wooden_rooms",
+            "pb_fund_per_school_riel",
+            "bamboo_buildings",
+            "pct_schools_two_shift",
+            "bamboo_rooms",
+            "pct_schools_in_pagoda",
+            "pupil_teacher_ratio",
+            "funding_community",
+            "pupil_classroom_ratio",
+            "schools_with_library",
+            "bad_qual_teacher",
+            "total_staff_total",
+            "kids_population",
+            "num_classrooms",
+        ]
+        plot_features_grid(prov_agg, features_list_enrollment, target='enrollment_total')
+        drop_out_features = [
+            "pct_schools_in_pagoda",
+            "principal_avg_service_years",
+            "good_qual_teacher",
+            "pb_fund_per_school_riel",
+            "total_staff_total",
+            "bad_qual_teacher",
+            "kids_population",
+            "num_classrooms",
+            "schools_with_library",
+            "schools_with_office",
+            "pct_schools_two_shift",
+            "pct_overage_enrollment_lower_sec",
+            "pupil_teacher_ratio",
+            "pct_overage_enrollment_primary",
+            "wooden_rooms",
+        ]
+        plot_features_grid(prov_agg, drop_out_features, target='avg_dropout_rate')
+        teacher_quality_features = [
+            "classroom_area_per_student",
+            "wooden_rooms",
+            "pct_schools_two_shift",
+            "pupil_teacher_ratio",
+            "bamboo_buildings",
+            "bamboo_rooms",
+            "funding_abroad",
+            "schools_without_water",
+            "pb_fund_per_school_riel",
+            "funding_ios_ngos",
+            "num_classrooms",
+            "schools_with_office",
+            "schools_with_library",
+            "pct_schools_in_pagoda",
+            "preschool_with_sport_facility",
+        ]
+        plot_features_grid(prov_agg, teacher_quality_features, target='teaching_staff_edu_qual_index')
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 8 — Long-term Trends (appendix)
 # ══════════════════════════════════════════════════════════════════════════════
