@@ -5,3 +5,6 @@ plotly
 geopandas
 matplotlib
 seaborn
+scikit-learn
+xgboost
+ipykernel

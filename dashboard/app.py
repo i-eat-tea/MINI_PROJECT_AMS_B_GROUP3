@@ -17,11 +17,21 @@ st.set_page_config(
     layout="wide"
 )
 
+import os
+
 # ─── Load Data ────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
-    df = pd.read_csv('cleaned_new_data.csv')
-    df2 = pd.read_csv('appendix.csv')
+    # Robust pathing: check if we are running from root or dashboard/
+    if os.path.exists('data/cleaned_new_data.csv'):
+        path1 = 'data/cleaned_new_data.csv'
+        path2 = 'data/appendix.csv'
+    else:
+        path1 = '../data/cleaned_new_data.csv'
+        path2 = '../data/appendix.csv'
+        
+    df = pd.read_csv(path1)
+    df2 = pd.read_csv(path2)
     if 'year' not in df.columns and 'Year' in df.columns:
         df = df.rename(columns={'Year': 'year', 'Province': 'province'})
     if 'row_id' in df.columns:
