@@ -53,8 +53,9 @@ with st.sidebar:
         "Student Flow",
         "Teaching Staff & Quality",
         "Provincial Deep Dive",
-        "Long-term Trends",
         "Relationship Analysis",
+        "Modelling & Forecasts",
+        "Long-term Trends",
     ])
 
     st.markdown("---")
@@ -205,17 +206,46 @@ elif page == "Schools & Infrastructure":
     col_left, col_right = st.columns(2)
     with col_left:
         d_latest = dff[dff['year'] == latest_year]
-        if 'schools_without_water' in d_latest.columns:
-            water_df = d_latest.groupby('province')[['schools_without_water', 'schools_without_latrine']].sum()
-            water_df = water_df.sort_values('schools_without_water', ascending=True).reset_index()
+        # Prefer using existing percentage columns if present
+        if 'pct_schools_without_water' in d_latest.columns and 'pct_schools_without_toilet' in d_latest.columns:
+            water_df = d_latest.groupby('province')[['pct_schools_without_water', 'pct_schools_without_toilet']].mean().reset_index()
+            water_df = water_df.sort_values('pct_schools_without_toilet', ascending=True)
             fig = go.Figure()
-            fig.add_trace(go.Bar(y=water_df['province'], x=water_df['schools_without_water'],
-                                 name='No Water', orientation='h', marker_color='#2196F3'))
-            fig.add_trace(go.Bar(y=water_df['province'], x=water_df['schools_without_latrine'],
-                                 name='No Latrine', orientation='h', marker_color='#FF5722'))
-            fig.update_layout(barmode='group', title=f'Schools Without Facilities ({latest_year})',
+            fig.add_trace(go.Bar(y=water_df['province'], x=water_df['pct_schools_without_water'],
+                                 name='No Water (%)', orientation='h', marker_color='#2196F3', hovertemplate='%{x:.1f}%'))
+            fig.add_trace(go.Bar(y=water_df['province'], x=water_df['pct_schools_without_toilet'],
+                                 name='No Toilet/Latrine (%)', orientation='h', marker_color='#FF5722', hovertemplate='%{x:.1f}%'))
+            fig.update_layout(barmode='group', title=f'Schools Without Water / Toilet Rate ({latest_year})',
                               template='plotly_white', height=500)
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            # Fallbacks: try using counts or previously computed rates
+            # If pct exists individually, use it
+            if 'pct_schools_without_toilet' in d_latest.columns:
+                lat_df = d_latest.groupby('province')[['pct_schools_without_toilet']].mean().reset_index()
+                lat_df = lat_df.sort_values('pct_schools_without_toilet', ascending=True)
+                fig = go.Figure()
+                fig.add_trace(go.Bar(y=lat_df['province'], x=lat_df['pct_schools_without_toilet'],
+                                     name='No Toilet/Latrine (%)', orientation='h', marker_color='#FF5722', hovertemplate='%{x:.1f}%'))
+                fig.update_layout(title=f'Schools Without Toilet/Latrine Rate ({latest_year})', template='plotly_white', height=500)
+                st.plotly_chart(fig, use_container_width=True)
+            elif 'schools_without_latrine' in d_latest.columns and 'num_schools' in d_latest.columns:
+                lat_df = d_latest.groupby('province')[['schools_without_latrine','num_schools']].sum()
+                lat_df['pct_schools_without_latrine'] = (lat_df['schools_without_latrine'] / lat_df['num_schools']).replace([np.inf, -np.inf], np.nan) * 100
+                lat_df = lat_df.sort_values('pct_schools_without_latrine', ascending=True).reset_index()
+                fig = go.Figure()
+                fig.add_trace(go.Bar(y=lat_df['province'], x=lat_df['pct_schools_without_latrine'],
+                                     name='No Latrine Rate (%)', orientation='h', marker_color='#FF5722', hovertemplate='%{x:.1f}%'))
+                fig.update_layout(title=f'Schools Without Latrine Rate ({latest_year})', template='plotly_white', height=500)
+                st.plotly_chart(fig, use_container_width=True)
+            elif 'schools_without_latrine' in d_latest.columns:
+                lat_df = d_latest.groupby('province')[['schools_without_latrine']].sum().reset_index()
+                lat_df = lat_df.sort_values('schools_without_latrine', ascending=True)
+                fig = go.Figure()
+                fig.add_trace(go.Bar(y=lat_df['province'], x=lat_df['schools_without_latrine'],
+                                     name='No Latrine (count)', orientation='h', marker_color='#FF5722'))
+                fig.update_layout(title=f'Schools Without Latrine ({latest_year})', template='plotly_white', height=500)
+                st.plotly_chart(fig, use_container_width=True)
 
     with col_right:
         if 'schools_with_library' in dff.columns:
@@ -620,7 +650,7 @@ elif page == "Relationship Analysis":
 
 # --- Example Call ---
 # plot_features_grid(df_cleaned, features_list, target='enrollment_total')
-    tab1, tab2 = st.tabs(["heatmap","scatter"])
+    tab1, tab2, tab3 = st.tabs(["heatmap","scatter","pairplot"])
 
     with tab1:
         enrollment_raw = [
@@ -708,6 +738,137 @@ elif page == "Relationship Analysis":
             "preschool_with_sport_facility",
         ]
         plot_features_grid(prov_agg, teacher_quality_features, target='teaching_staff_edu_qual_index')
+
+    with tab3:
+        st.markdown("### Pairplot / Scatter Matrix")
+        # numeric candidate features
+        numeric_cols = [c for c in prov_agg.columns if pd.api.types.is_numeric_dtype(prov_agg[c])]
+        default_feats = [f for f in features_list_enrollment if f in numeric_cols][:6]
+        selected_pair_feats = st.multiselect("Select features for pairplot (3-8 recommended)", options=numeric_cols, default=default_feats)
+        pair_sample = st.number_input("Max sample rows (0 = all)", min_value=0, value=0, step=1)
+        pair_corr_method = st.selectbox("Correlation method (for annotations)",["pearson","spearman"], index=0)
+
+        if len(selected_pair_feats) < 2:
+            st.info("Select at least 2 numeric features to build a pairplot.")
+        else:
+            df_pair = prov_agg[selected_pair_feats].dropna()
+            if pair_sample and pair_sample > 0 and pair_sample < len(df_pair):
+                df_pair = df_pair.sample(pair_sample, random_state=42)
+
+            # Pairplot using seaborn (corner to reduce plots)
+            try:
+                pp = sns.pairplot(df_pair, corner=True, diag_kind='kde', plot_kws={'alpha':0.6, 's':40})
+                st.pyplot(pp.fig)
+                plt.close(pp.fig)
+            except Exception as e:
+                st.error(f"Pairplot failed: {e}")
+
+            # show correlation table for selected features
+            corr_sel = df_pair.corr(method=pair_corr_method)
+            st.markdown("**Correlation matrix (selected features)**")
+            st.dataframe(corr_sel.style.background_gradient(cmap='RdBu_r').format("{:.2f}"))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGE 7.5 — Modelling & Forecasts
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Modelling & Forecasts":
+    st.title("Modelling & Forecasts")
+    st.markdown("---")
+    st.write("Project selected features to 2027–2030 using simple trend fits (linear/log/sqrt/exp). Fits are accepted when R² &gt; threshold.")
+
+    # Helper functions (lightweight port from the modelling notebook)
+    def _fit_candidates(x, y):
+        from sklearn.linear_model import LinearRegression
+        from sklearn.metrics import r2_score
+        x = np.array(x, dtype=float)
+        y = np.array(y, dtype=float)
+        mask = ~(np.isnan(x) | np.isnan(y))
+        x, y = x[mask], y[mask]
+        if len(x) < 3:
+            return 'linear', None, -999
+
+        candidates = {}
+        X_lin = x.reshape(-1, 1)
+        m = LinearRegression().fit(X_lin, y)
+        candidates['linear'] = (m, lambda xf: m.predict(xf.reshape(-1,1)), r2_score(y, m.predict(X_lin)))
+
+        if np.all(x > 0):
+            X_log = np.log(x).reshape(-1, 1)
+            m2 = LinearRegression().fit(X_log, y)
+            candidates['log'] = (m2, lambda xf: m2.predict(np.log(xf).reshape(-1,1)), r2_score(y, m2.predict(X_log)))
+
+        if np.all(x >= 0):
+            X_sqrt = np.sqrt(x).reshape(-1, 1)
+            m3 = LinearRegression().fit(X_sqrt, y)
+            candidates['sqrt'] = (m3, lambda xf: m3.predict(np.sqrt(xf).reshape(-1,1)), r2_score(y, m3.predict(X_sqrt)))
+
+        if np.all(y > 0):
+            X_exp = x.reshape(-1, 1)
+            m4 = LinearRegression().fit(X_exp, np.log(y))
+            y_pred_exp = np.exp(m4.predict(X_exp))
+            candidates['exp'] = (m4, lambda xf: np.exp(m4.predict(xf.reshape(-1,1))), r2_score(y, y_pred_exp))
+
+        best_name = max(candidates, key=lambda k: candidates[k][2])
+        _, pred_fn, best_r2 = candidates[best_name]
+        return best_name, pred_fn, best_r2
+
+    def project_features_to_2030(df, feature_list, year_col='year', target_years=None, r2_threshold=0.5):
+        if target_years is None:
+            target_years = [2027, 2028, 2029, 2030]
+        national = df.groupby(year_col)[feature_list].mean().reset_index()
+        projected_rows = {year_col: target_years}
+        summary = []
+        for feat in feature_list:
+            if feat not in national.columns:
+                summary.append({'feature': feat, 'best_fit': 'missing', 'r2': np.nan, 'projected_as': 'missing'})
+                continue
+            x_train = national[year_col].values
+            y_train = national[feat].values
+            x_fore = np.array(target_years, dtype=float)
+            hist_mean = float(np.nanmean(y_train))
+            best_name, pred_fn, best_r2 = _fit_candidates(x_train, y_train)
+            if pred_fn is None or best_r2 < r2_threshold:
+                projected_rows[feat] = [hist_mean] * len(target_years)
+                label = 'flat (low R²)' if pred_fn is not None else 'flat (no data)'
+                summary.append({'feature': feat, 'best_fit': label, 'r2': round(best_r2, 4) if pred_fn else np.nan, 'projected_as': f'mean={hist_mean:.4f}'})
+                continue
+            projected_rows[feat] = list(pred_fn(x_fore))
+            summary.append({'feature': feat, 'best_fit': best_name, 'r2': round(best_r2, 4), 'projected_as': 'trend'})
+        projected_df = pd.DataFrame(projected_rows)
+        fit_summary = pd.DataFrame(summary).sort_values('r2', ascending=False).reset_index(drop=True)
+        return projected_df, fit_summary
+
+    numeric_cols = [c for c in dff.select_dtypes(include=[np.number]).columns if c != 'year']
+    defaults = [f for f in ['enrollment_total','schools_without_latrine','schools_without_water','pb_fund_per_school_riel','num_classrooms','teaching_staff_edu_qual_index'] if f in numeric_cols]
+
+    selected_feats = st.multiselect("Select features to project (at least 1)", options=numeric_cols, default=defaults[:6])
+    r2_threshold = st.slider("R² threshold to accept trend fit", 0.0, 1.0, 0.5)
+
+    if st.button("Run projections"):
+        if not selected_feats:
+            st.warning("Select at least one feature.")
+        else:
+            with st.spinner("Running projections..."):
+                projected_df, fit_summary = project_features_to_2030(dff, selected_feats, year_col='year', target_years=[2027,2028,2029,2030], r2_threshold=r2_threshold)
+                st.subheader("Fit summary")
+                st.dataframe(fit_summary)
+                st.markdown("---")
+                st.subheader("Projected values (2027–2030)")
+                st.dataframe(projected_df)
+
+                # Plot historical + projected
+                for feat in selected_feats:
+                    if feat not in dff.columns:
+                        continue
+                    hist = dff.groupby('year')[feat].mean().reset_index()
+                    proj = projected_df[['year', feat]] if 'year' in projected_df.columns else projected_df.rename(columns={'Year':'year'})[['year', feat]]
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=hist['year'], y=hist[feat], mode='lines+markers', name='Historical'))
+                    fig.add_trace(go.Scatter(x=proj['year'], y=proj[feat], mode='lines+markers', name='Projected'))
+                    fig.update_layout(title=f'{feat} — Historical + Projected', template='plotly_white', height=350)
+                    st.plotly_chart(fig, use_container_width=True)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 8 — Long-term Trends (appendix)
 # ══════════════════════════════════════════════════════════════════════════════
