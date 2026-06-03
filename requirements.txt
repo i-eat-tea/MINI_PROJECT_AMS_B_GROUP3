@@ -16,7 +16,6 @@ xgboost>=1.7
 geopandas>=0.12
 pyproj>=3.4
 shapely>=2.0
-fiona>=1.9
 
 # Notebook/runtime
 ipykernel
