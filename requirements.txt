@@ -11,6 +11,7 @@ streamlit>=1.18
 # ML
 scikit-learn>=1.2
 xgboost>=1.7
+pmdarima
 
 # Geo (note: these may need system libs on some hosts)
 geopandas>=0.12

@@ -9,6 +9,73 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from matplotlib.patheffects import withStroke
 import seaborn as sns
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import Ridge, Lasso, LinearRegression
+from sklearn.svm import SVR
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+import xgboost as xgb
+from pmdarima import auto_arima
+import warnings
+warnings.filterwarnings('ignore')
+
+# ─── Advanced ML Models ───────────────────────────────────────────────────────
+class WOASVR:
+    def __init__(self, n_whales=10, max_iter=15):
+        self.n_whales = n_whales
+        self.max_iter = max_iter
+        self.best_params = None
+        self.best_score = -np.inf
+
+    def fit(self, X, y):
+        whales = np.random.rand(self.n_whales, 3)
+        whales[:, 0] = whales[:, 0] * 99.9 + 0.1
+        whales[:, 1] = whales[:, 1] * 0.99 + 0.01
+        whales[:, 2] = whales[:, 2] * 0.999 + 0.001
+        best_whale = None
+        for i in range(self.max_iter):
+            a = 2 - i * (2 / self.max_iter)
+            for j in range(self.n_whales):
+                C, eps, g = whales[j]
+                model = SVR(C=C, epsilon=eps, gamma=g)
+                model.fit(X, y)
+                score = model.score(X, y)
+                if score > self.best_score:
+                    self.best_score = score
+                    self.best_params = {'C': C, 'epsilon': eps, 'gamma': g}
+                    best_whale = whales[j].copy()
+            for j in range(self.n_whales):
+                r1, r2 = np.random.rand(), np.random.rand()
+                A = 2 * a * r1 - a
+                C_param = 2 * r2
+                b, l, p = 1, (np.random.rand() * 2) - 1, np.random.rand()
+                if p < 0.5:
+                    if abs(A) < 1:
+                        D = abs(C_param * best_whale - whales[j])
+                        whales[j] = best_whale - A * D
+                    else:
+                        random_whale = whales[np.random.randint(self.n_whales)]
+                        D = abs(C_param * random_whale - whales[j])
+                        whales[j] = random_whale - A * D
+                else:
+                    D_best = abs(best_whale - whales[j])
+                    whales[j] = D_best * np.exp(b * l) * np.cos(2 * np.pi * l) + best_whale
+        self.model = SVR(**self.best_params)
+        self.model.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+class ARIMAXWrapper:
+    def __init__(self):
+        self.model = None
+    def fit(self, X, y):
+        self.model = auto_arima(y, X=X, seasonal=False, stepwise=True, suppress_warnings=True)
+        return self
+    def predict(self, X):
+        return self.model.predict(n_periods=len(X), X=X)
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -578,6 +645,7 @@ elif page == "Relationship Analysis":
 
     def plot_features_grid(df, features, target):
         # Ensure column names match lowercase
+        df = df.copy()
         df.columns = [c.lower() for c in df.columns]
         features = [f.lower() for f in features]
         target = target.lower()
@@ -678,7 +746,7 @@ elif page == "Relationship Analysis":
         "schools_without_water", "schools_without_latrine","classroom_area_per_student","preschool_with_sport_facility",#Amenities & Environment
         "pb_fund_per_school_riel","funding_school_income", "funding_community", "funding_govt_building", "funding_abroad", "funding_ios_ngos",#funding
         "pupil_teacher_ratio","pupil_classroom_ratio","pct_schools_two_shift","pct_schools_in_pagoda",# Supply/Demand Matching Ratios
-        "kids_population    "# Target Population Demographics
+        "kids_population"# Target Population Demographics
         ]
         corr_heatmap('teaching_staff_edu_qual_index', teacher_qual_raw,
                      'Raw Features × teacher quality (by Province, excl. 2021)')
@@ -773,101 +841,218 @@ elif page == "Relationship Analysis":
 # PAGE 7.5 — Modelling & Forecasts
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Modelling & Forecasts":
-    st.title("Modelling & Forecasts")
+    st.title("🚀 Advanced Modelling & Education Forecasts")
     st.markdown("---")
-    st.write("Project selected features to 2027–2030 using simple trend fits (linear/log/sqrt/exp). Fits are accepted when R² &gt; threshold.")
+    
+    st.write("""
+    This section uses a comprehensive ML pipeline to forecast key education indicators for Cambodia.
+    We evaluate multiple models (Random Forest, XGBoost, WOA-SVR, ARIMAX, etc.) to identify the most accurate predictor for each target.
+    """)
 
-    # Helper functions (lightweight port from the modelling notebook)
-    def _fit_candidates(x, y):
-        from sklearn.linear_model import LinearRegression
-        from sklearn.metrics import r2_score
-        x = np.array(x, dtype=float)
-        y = np.array(y, dtype=float)
-        mask = ~(np.isnan(x) | np.isnan(y))
-        x, y = x[mask], y[mask]
-        if len(x) < 3:
-            return 'linear', None, -999
+    # 1. Targets & Features Configuration
+    TARGETS = {
+        'Total Enrollment': 'enrollment_total',
+        'Average Dropout Rate': 'avg_dropout_rate',
+        'Teacher Quality Index': 'teaching_staff_edu_qual_index'
+    }
+    
+    # Pre-calculated features from notebook analysis
+    FEATURE_MAP = {
+        'enrollment_total': ['total_staff_total', 'kids_population', 'num_classrooms'],
+        'avg_dropout_rate': ['buildings_repaired', 'over_age_enrollment_total', 'staff_per_school', 
+                             'buildings_per_school', 'gross_admission_rate_total', 'avg_transition_rate', 
+                             'teaching_staff_edu_qual_index'],
+        'teaching_staff_edu_qual_index': ['schools_without_water', 'schools_without_latrine', 
+                                          'principal_avg_service_years', 'principal_upper_sec_plus_edu', 
+                                          'buildings_poor_roof', 'pb_fund_per_school_riel', 
+                                          'classrooms_per_school', 'gross_admission_rate_total', 
+                                          'transition_rate_lower_sec_total']
+    }
 
-        candidates = {}
-        X_lin = x.reshape(-1, 1)
-        m = LinearRegression().fit(X_lin, y)
-        candidates['linear'] = (m, lambda xf: m.predict(xf.reshape(-1,1)), r2_score(y, m.predict(X_lin)))
+    # 2. Data Engineering (Alignment with Notebook)
+    def engineer_targets(df):
+        d = df.copy()
+        # Drop 2021 as it's an outlier year
+        d = d[d['year'] != 2021].reset_index(drop=True)
+        
+        # Repetition/Dropout/Overage/Transition
+        if 'g1_repetition' in d.columns:
+            d['avg_repetition_rate'] = d[[f'g{i}_repetition' for i in range(1, 13)]].mean(axis=1)
+        if 'g1_dropout' in d.columns:
+            d['avg_dropout_rate'] = d[[f'g{i}_dropout' for i in range(1, 13)]].mean(axis=1)
+        
+        overage_cols = ['pct_overage_enrollment_primary','pct_overage_enrollment_lower_sec','pct_overage_enrollment_upper_sec']
+        if all(c in d.columns for c in overage_cols):
+            d['over_age_enrollment_total'] = d[overage_cols].sum(axis=1)
+            
+        if 'transition_rate_lower_sec_total' in d.columns:
+            d['avg_transition_rate'] = d[['transition_rate_lower_sec_total', 'transition_rate_upper_sec_total']].mean(axis=1)
 
-        if np.all(x > 0):
-            X_log = np.log(x).reshape(-1, 1)
-            m2 = LinearRegression().fit(X_log, y)
-            candidates['log'] = (m2, lambda xf: m2.predict(np.log(xf).reshape(-1,1)), r2_score(y, m2.predict(X_log)))
+        d['kids_population'] = d[['pop_aged6_total','pop_aged6_11_total','pop_aged12_14_total','pop_aged15_17_total']].sum(axis=1)
+        
+        # Qual Index
+        edu_levels = ['primary','lower_sec','upper_sec','graduate','postgrad','phd']
+        weights = {'primary':1,'lower_sec':2,'upper_sec':3,'graduate':4,'postgrad':5,'phd':6}
+        if 'teaching_staff_edu_primary' in d.columns:
+            weighted_sum = sum(d[f'teaching_staff_edu_{l}'] * w for l, w in weights.items())
+            total = d[[f'teaching_staff_edu_{l}' for l in edu_levels]].sum(axis=1).replace(0, pd.NA)
+            d['teaching_staff_edu_qual_index'] = weighted_sum / total
+        
+        # Handle some transformations (log/sqrt) if required by feature list
+        if 'buildings_repaired' in d.columns:
+            d['log_buildings_repaired'] = np.log1p(d['buildings_repaired'])
+        if 'buildings_per_school' in d.columns:
+            d['sqrt_buildings_per_school'] = np.sqrt(d['buildings_per_school'])
+        if 'schools_without_water' in d.columns:
+            d['log_schools_without_water'] = np.log1p(d['schools_without_water'])
+        if 'schools_without_latrine' in d.columns:
+            d['log_schools_without_latrine'] = np.log1p(d['schools_without_latrine'])
+        if 'principal_upper_sec_plus_edu' in d.columns:
+            d['log_principal_upper_sec_plus_edu'] = np.log1p(d['principal_upper_sec_plus_edu'])
+        if 'buildings_poor_roof' in d.columns:
+            d['log_buildings_poor_roof'] = np.log1p(d['buildings_poor_roof'])
+        if 'pb_fund_per_school_riel' in d.columns:
+            d['log_pb_fund_per_school_riel'] = np.log1p(d['pb_fund_per_school_riel'])
+        if 'classrooms_per_school' in d.columns:
+            d['sqrt_classrooms_per_school'] = np.sqrt(d['classrooms_per_school'])
 
-        if np.all(x >= 0):
-            X_sqrt = np.sqrt(x).reshape(-1, 1)
-            m3 = LinearRegression().fit(X_sqrt, y)
-            candidates['sqrt'] = (m3, lambda xf: m3.predict(np.sqrt(xf).reshape(-1,1)), r2_score(y, m3.predict(X_sqrt)))
+        return d
 
-        if np.all(y > 0):
-            X_exp = x.reshape(-1, 1)
-            m4 = LinearRegression().fit(X_exp, np.log(y))
-            y_pred_exp = np.exp(m4.predict(X_exp))
-            candidates['exp'] = (m4, lambda xf: np.exp(m4.predict(xf.reshape(-1,1))), r2_score(y, y_pred_exp))
+    # 3. User Selection
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        target_label = st.selectbox("Select Forecast Target", list(TARGETS.keys()))
+        target_col = TARGETS[target_label]
+    with col2:
+        forecast_years = st.multiselect("Forecast Horizon", [2027, 2028, 2029, 2030], default=[2027, 2028, 2029, 2030])
 
-        best_name = max(candidates, key=lambda k: candidates[k][2])
-        _, pred_fn, best_r2 = candidates[best_name]
-        return best_name, pred_fn, best_r2
+    if st.button("Run ML Pipeline"):
+        with st.spinner(f"Training models for {target_label}..."):
+            processed_df = engineer_targets(df)
+            
+            # Simple feature mapping update for transformed cols
+            raw_feats = FEATURE_MAP[target_col]
+            final_feats = []
+            for f in raw_feats:
+                if f == 'buildings_repaired': final_feats.append('log_buildings_repaired')
+                elif f == 'buildings_per_school': final_feats.append('sqrt_buildings_per_school')
+                elif f == 'schools_without_water': final_feats.append('log_schools_without_water')
+                elif f == 'schools_without_latrine': final_feats.append('log_schools_without_latrine')
+                elif f == 'principal_upper_sec_plus_edu': final_feats.append('log_principal_upper_sec_plus_edu')
+                elif f == 'buildings_poor_roof': final_feats.append('log_buildings_poor_roof')
+                elif f == 'pb_fund_per_school_riel': final_feats.append('log_pb_fund_per_school_riel')
+                elif f == 'classrooms_per_school': final_feats.append('sqrt_classrooms_per_school')
+                else: final_feats.append(f)
+            
+            # 4. Pipeline Logic
+            from sklearn.impute import SimpleImputer
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+            from sklearn.linear_model import Ridge, Lasso
+            from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+            import xgboost as xgb
 
-    def project_features_to_2030(df, feature_list, year_col='year', target_years=None, r2_threshold=0.5):
-        if target_years is None:
-            target_years = [2027, 2028, 2029, 2030]
-        national = df.groupby(year_col)[feature_list].mean().reset_index()
-        projected_rows = {year_col: target_years}
-        summary = []
-        for feat in feature_list:
-            if feat not in national.columns:
-                summary.append({'feature': feat, 'best_fit': 'missing', 'r2': np.nan, 'projected_as': 'missing'})
-                continue
-            x_train = national[year_col].values
-            y_train = national[feat].values
-            x_fore = np.array(target_years, dtype=float)
-            hist_mean = float(np.nanmean(y_train))
-            best_name, pred_fn, best_r2 = _fit_candidates(x_train, y_train)
-            if pred_fn is None or best_r2 < r2_threshold:
-                projected_rows[feat] = [hist_mean] * len(target_years)
-                label = 'flat (low R²)' if pred_fn is not None else 'flat (no data)'
-                summary.append({'feature': feat, 'best_fit': label, 'r2': round(best_r2, 4) if pred_fn else np.nan, 'projected_as': f'mean={hist_mean:.4f}'})
-                continue
-            projected_rows[feat] = list(pred_fn(x_fore))
-            summary.append({'feature': feat, 'best_fit': best_name, 'r2': round(best_r2, 4), 'projected_as': 'trend'})
-        projected_df = pd.DataFrame(projected_rows)
-        fit_summary = pd.DataFrame(summary).sort_values('r2', ascending=False).reset_index(drop=True)
-        return projected_df, fit_summary
+            # Prep Data
+            feats = [c for c in final_feats if c in processed_df.columns]
+            train_mask = processed_df['year'] <= 2023
+            val_mask = (processed_df['year'] > 2023) & (processed_df['year'] <= 2026)
+            
+            X_train_raw = processed_df.loc[train_mask, feats]
+            X_val_raw = processed_df.loc[val_mask, feats]
+            y_train = processed_df.loc[train_mask, target_col]
+            y_val = processed_df.loc[val_mask, target_col]
 
-    numeric_cols = [c for c in dff.select_dtypes(include=[np.number]).columns if c != 'year']
-    defaults = [f for f in ['enrollment_total','schools_without_latrine','schools_without_water','pb_fund_per_school_riel','num_classrooms','teaching_staff_edu_qual_index'] if f in numeric_cols]
+            imputer = SimpleImputer(strategy='median')
+            X_train_imp = pd.DataFrame(imputer.fit_transform(X_train_raw), columns=feats)
+            X_val_imp = pd.DataFrame(imputer.transform(X_val_raw), columns=feats)
 
-    selected_feats = st.multiselect("Select features to project (at least 1)", options=numeric_cols, default=defaults[:6])
-    r2_threshold = st.slider("R² threshold to accept trend fit", 0.0, 1.0, 0.5)
+            scaler = StandardScaler()
+            X_train_sc = scaler.fit_transform(X_train_imp)
+            X_val_sc = scaler.transform(X_val_imp)
 
-    if st.button("Run projections"):
-        if not selected_feats:
-            st.warning("Select at least one feature.")
-        else:
-            with st.spinner("Running projections..."):
-                projected_df, fit_summary = project_features_to_2030(dff, selected_feats, year_col='year', target_years=[2027,2028,2029,2030], r2_threshold=r2_threshold)
-                st.subheader("Fit summary")
-                st.dataframe(fit_summary)
-                st.markdown("---")
-                st.subheader("Projected values (2027–2030)")
-                st.dataframe(projected_df)
+            log_transform = (target_col == 'avg_dropout_rate')
+            y_fit = np.log1p(y_train.values) if log_transform else y_train.values
 
-                # Plot historical + projected
-                for feat in selected_feats:
-                    if feat not in dff.columns:
-                        continue
-                    hist = dff.groupby('year')[feat].mean().reset_index()
-                    proj = projected_df[['year', feat]] if 'year' in projected_df.columns else projected_df.rename(columns={'Year':'year'})[['year', feat]]
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=hist['year'], y=hist[feat], mode='lines+markers', name='Historical'))
-                    fig.add_trace(go.Scatter(x=proj['year'], y=proj[feat], mode='lines+markers', name='Projected'))
-                    fig.update_layout(title=f'{feat} — Historical + Projected', template='plotly_white', height=350)
-                    st.plotly_chart(fig, use_container_width=True)
+            models = {
+                'Random Forest': (RandomForestRegressor(n_estimators=100, random_state=42), X_train_imp, X_val_imp),
+                'Gradient Boosting': (GradientBoostingRegressor(random_state=42), X_train_imp, X_val_imp),
+                'XGBoost': (xgb.XGBRegressor(random_state=42), X_train_imp, X_val_imp),
+                'WOA-SVR': (WOASVR(n_whales=10, max_iter=10), X_train_sc, X_val_sc),
+                'ARIMAX': (ARIMAXWrapper(), X_train_imp, X_val_imp),
+                'Ridge': (Ridge(alpha=1.0), X_train_imp, X_val_imp),
+                'Lasso': (Lasso(alpha=0.01), X_train_imp, X_val_imp),
+            }
+
+            records = []
+            for name, (model, X_tr, X_v) in models.items():
+                try:
+                    model.fit(X_tr, y_fit)
+                    raw_pred = model.predict(X_v)
+                    y_pred = np.expm1(raw_pred) if log_transform else raw_pred
+                    records.append({
+                        'Model': name,
+                        'R²': r2_score(y_val, y_pred),
+                        'RMSE': np.sqrt(mean_squared_error(y_val, y_pred)),
+                        'MAE': mean_absolute_error(y_val, y_pred)
+                    })
+                except Exception as e:
+                    st.error(f"Model {name} failed: {e}")
+
+            results_df = pd.DataFrame(records).sort_values('R²', ascending=False).reset_index(drop=True)
+            
+            # Display Results
+            st.subheader("📊 Model Comparison Dashboard")
+            st.dataframe(results_df.style.highlight_max(subset=['R²'], color='#4CAF50').format({"R²": "{:.4f}", "RMSE": "{:.2f}", "MAE": "{:.2f}"}))
+            
+            best_name = results_df.iloc[0]['Model']
+            st.success(f"✅ Recommended Model: **{best_name}**")
+
+            # 5. Final Forecast
+            # Projection of features first (simple mean for demo, can be improved)
+            future_years = np.array(forecast_years)
+            projected_features = []
+            for year in future_years:
+                row = {'year': year}
+                for f in feats:
+                    row[f] = processed_df[f].mean() # Simple mean projection for UI speed
+                projected_features.append(row)
+            X_fut_df = pd.DataFrame(projected_features)
+            X_fut_imp = pd.DataFrame(imputer.transform(X_fut_df[feats]), columns=feats)
+            X_fut_sc = scaler.transform(X_fut_imp)
+
+            # Re-train best model on full data
+            full_X_imp = pd.concat([X_train_imp, X_val_imp])
+            full_y = np.log1p(pd.concat([y_train, y_val])) if log_transform else pd.concat([y_train, y_val])
+            full_X_sc = np.vstack([X_train_sc, X_val_sc])
+            
+            # Best model instance
+            if best_name == 'Random Forest': final_model = RandomForestRegressor(n_estimators=100, random_state=42)
+            elif best_name == 'Gradient Boosting': final_model = GradientBoostingRegressor(random_state=42)
+            elif best_name == 'XGBoost': final_model = xgb.XGBRegressor(random_state=42)
+            elif best_name == 'WOA-SVR': final_model = WOASVR(n_whales=10, max_iter=10)
+            elif best_name == 'ARIMAX': final_model = ARIMAXWrapper()
+            elif best_name == 'Ridge': final_model = Ridge(alpha=1.0)
+            else: final_model = Lasso(alpha=0.01)
+
+            use_sc = ('SVR' in best_name)
+            final_model.fit(full_X_sc if use_sc else full_X_imp, full_y)
+            
+            raw_fut = final_model.predict(X_fut_sc if use_sc else X_fut_imp)
+            y_future = np.expm1(raw_fut) if log_transform else raw_fut
+
+            # 6. Plotting
+            hist_data = processed_df.groupby('year')[target_col].mean().reset_index()
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=hist_data['year'], y=hist_data[target_col], name='Historical (Mean)', line=dict(color='#2196F3', width=3)))
+            fig.add_trace(go.Scatter(x=future_years, y=y_future, name=f'Forecast ({best_name})', line=dict(color='#F44336', width=3, dash='dash'), marker=dict(size=10)))
+            
+            fig.update_layout(title=f'Historical and Forecasted {target_label}', xaxis_title='Year', yaxis_title=target_label, template='plotly_dark')
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader(f"📅 {target_label} Forecast Values")
+            forecast_df = pd.DataFrame({'Year': future_years, 'Forecast': y_future})
+            st.table(forecast_df.style.format({"Forecast": "{:.2f}"}))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 8 — Long-term Trends (appendix)
