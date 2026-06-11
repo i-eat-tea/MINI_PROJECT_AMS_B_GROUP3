@@ -16,66 +16,42 @@ from sklearn.linear_model import Ridge, Lasso, LinearRegression
 from sklearn.svm import SVR
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import xgboost as xgb
-from pmdarima import auto_arima
 import warnings
 warnings.filterwarnings('ignore')
 
-# ─── Advanced ML Models ───────────────────────────────────────────────────────
-class WOASVR:
-    def __init__(self, n_whales=10, max_iter=15):
-        self.n_whales = n_whales
-        self.max_iter = max_iter
-        self.best_params = None
-        self.best_score = -np.inf
+# ─── Helper for Feature Projection ──────────────────────────────────────────
+def _fit_candidates(x, y):
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    mask = ~(np.isnan(x) | np.isnan(y))
+    x, y = x[mask], y[mask]
+    if len(x) < 3:
+        return 'linear', (lambda xf: np.array([np.nanmean(y)] * len(xf))), -999
 
-    def fit(self, X, y):
-        whales = np.random.rand(self.n_whales, 3)
-        whales[:, 0] = whales[:, 0] * 99.9 + 0.1
-        whales[:, 1] = whales[:, 1] * 0.99 + 0.01
-        whales[:, 2] = whales[:, 2] * 0.999 + 0.001
-        best_whale = None
-        for i in range(self.max_iter):
-            a = 2 - i * (2 / self.max_iter)
-            for j in range(self.n_whales):
-                C, eps, g = whales[j]
-                model = SVR(C=C, epsilon=eps, gamma=g)
-                model.fit(X, y)
-                score = model.score(X, y)
-                if score > self.best_score:
-                    self.best_score = score
-                    self.best_params = {'C': C, 'epsilon': eps, 'gamma': g}
-                    best_whale = whales[j].copy()
-            for j in range(self.n_whales):
-                r1, r2 = np.random.rand(), np.random.rand()
-                A = 2 * a * r1 - a
-                C_param = 2 * r2
-                b, l, p = 1, (np.random.rand() * 2) - 1, np.random.rand()
-                if p < 0.5:
-                    if abs(A) < 1:
-                        D = abs(C_param * best_whale - whales[j])
-                        whales[j] = best_whale - A * D
-                    else:
-                        random_whale = whales[np.random.randint(self.n_whales)]
-                        D = abs(C_param * random_whale - whales[j])
-                        whales[j] = random_whale - A * D
-                else:
-                    D_best = abs(best_whale - whales[j])
-                    whales[j] = D_best * np.exp(b * l) * np.cos(2 * np.pi * l) + best_whale
-        self.model = SVR(**self.best_params)
-        self.model.fit(X, y)
-        return self
+    candidates = {}
+    X_lin = x.reshape(-1, 1)
+    m = LinearRegression().fit(X_lin, y)
+    candidates['linear'] = (m, lambda xf: m.predict(xf.reshape(-1,1)), r2_score(y, m.predict(X_lin)))
 
-    def predict(self, X):
-        return self.model.predict(X)
+    if np.all(x > 0):
+        X_log = np.log(x).reshape(-1, 1)
+        m2 = LinearRegression().fit(X_log, y)
+        candidates['log'] = (m2, lambda xf: m2.predict(np.log(xf).reshape(-1,1)), r2_score(y, m2.predict(X_log)))
 
-class ARIMAXWrapper:
-    def __init__(self):
-        self.model = None
-    def fit(self, X, y):
-        self.model = auto_arima(y, X=X, seasonal=False, stepwise=True, suppress_warnings=True)
-        return self
-    def predict(self, X):
-        return self.model.predict(n_periods=len(X), X=X)
+    if np.all(x >= 0):
+        X_sqrt = np.sqrt(x).reshape(-1, 1)
+        m3 = LinearRegression().fit(X_sqrt, y)
+        candidates['sqrt'] = (m3, lambda xf: m3.predict(np.sqrt(xf).reshape(-1,1)), r2_score(y, m3.predict(X_sqrt)))
+
+    if np.all(y > 0):
+        X_exp = x.reshape(-1, 1)
+        m4 = LinearRegression().fit(X_exp, np.log(y))
+        y_pred_exp = np.exp(m4.predict(X_exp))
+        candidates['exp'] = (m4, lambda xf: np.exp(m4.predict(xf.reshape(-1,1))), r2_score(y, y_pred_exp))
+
+    best_name = max(candidates, key=lambda k: candidates[k][2])
+    _, pred_fn, best_r2 = candidates[best_name]
+    return best_name, pred_fn, best_r2
 
 # ─── Page Config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -945,13 +921,6 @@ elif page == "Modelling & Forecasts":
                 else: final_feats.append(f)
             
             # 4. Pipeline Logic
-            from sklearn.impute import SimpleImputer
-            from sklearn.preprocessing import StandardScaler
-            from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-            from sklearn.linear_model import Ridge, Lasso
-            from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-            import xgboost as xgb
-
             # Prep Data
             feats = [c for c in final_feats if c in processed_df.columns]
             train_mask = processed_df['year'] <= 2023
@@ -974,16 +943,16 @@ elif page == "Modelling & Forecasts":
             y_fit = np.log1p(y_train.values) if log_transform else y_train.values
 
             models = {
-                'Random Forest': (RandomForestRegressor(n_estimators=100, random_state=42), X_train_imp, X_val_imp),
-                'Gradient Boosting': (GradientBoostingRegressor(random_state=42), X_train_imp, X_val_imp),
-                'XGBoost': (xgb.XGBRegressor(random_state=42), X_train_imp, X_val_imp),
-                'WOA-SVR': (WOASVR(n_whales=10, max_iter=10), X_train_sc, X_val_sc),
-                'ARIMAX': (ARIMAXWrapper(), X_train_imp, X_val_imp),
-                'Ridge': (Ridge(alpha=1.0), X_train_imp, X_val_imp),
-                'Lasso': (Lasso(alpha=0.01), X_train_imp, X_val_imp),
+                'Random Forest':     (RandomForestRegressor(n_estimators=150, max_depth=8, min_samples_leaf=4, random_state=42, n_jobs=-1), X_train_imp, X_val_imp),
+                'Gradient Boosting': (GradientBoostingRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42),         X_train_imp, X_val_imp),
+                'XGBoost':           (xgb.XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42, verbosity=0),     X_train_imp, X_val_imp),
+                'SVR (RBF)':         (SVR(kernel='rbf',    C=10, epsilon=0.1),                                                               X_train_sc,  X_val_sc),
+                'SVR (Linear)':      (SVR(kernel='linear', C=1),                                                                             X_train_sc,  X_val_sc),
+                'Ridge':             (Ridge(alpha=1.0),                                                                                      X_train_imp, X_val_imp),
+                'Lasso':             (Lasso(alpha=0.01, max_iter=5000),                                                                      X_train_imp, X_val_imp),
             }
 
-            records = []
+            records, val_preds_dict = [], {}
             for name, (model, X_tr, X_v) in models.items():
                 try:
                     model.fit(X_tr, y_fit)
@@ -995,28 +964,63 @@ elif page == "Modelling & Forecasts":
                         'RMSE': np.sqrt(mean_squared_error(y_val, y_pred)),
                         'MAE': mean_absolute_error(y_val, y_pred)
                     })
+                    val_preds_dict[name] = y_pred
                 except Exception as e:
                     st.error(f"Model {name} failed: {e}")
 
             results_df = pd.DataFrame(records).sort_values('R²', ascending=False).reset_index(drop=True)
             
-            # Display Results
+            # Display Metrics
             st.subheader("📊 Model Comparison Dashboard")
             st.dataframe(results_df.style.highlight_max(subset=['R²'], color='#4CAF50').format({"R²": "{:.4f}", "RMSE": "{:.2f}", "MAE": "{:.2f}"}))
             
             best_name = results_df.iloc[0]['Model']
             st.success(f"✅ Recommended Model: **{best_name}**")
 
-            # 5. Final Forecast
-            # Projection of features first (simple mean for demo, can be improved)
+            # 5. Final Forecast (Robust Feature Projection)
+            st.markdown("---")
+            st.subheader(f"📈 Input Feature Projections for {target_label}")
+            st.write("Before forecasting the target, we project the necessary input features using best-fit trends (Linear, Log, Exp, or Sqrt).")
+            
             future_years = np.array(forecast_years)
-            projected_features = []
-            for year in future_years:
-                row = {'year': year}
-                for f in feats:
-                    row[f] = processed_df[f].mean() # Simple mean projection for UI speed
-                projected_features.append(row)
-            X_fut_df = pd.DataFrame(projected_features)
+            
+            # Group historical data by year for projection fitting
+            national_means = processed_df.groupby('year')[raw_feats].mean().reset_index()
+            
+            # Setup columns for projection plots
+            proj_cols = st.columns(3)
+            
+            # Logic to store projected values
+            proj_data = {'year': future_years}
+            
+            for idx, feat in enumerate(raw_feats):
+                # 1. Fit best curve for this feature
+                fit_name, pred_fn, r2 = _fit_candidates(national_means['year'].values, national_means[feat].values)
+                
+                # 2. Project future values
+                y_proj = pred_fn(future_years)
+                proj_data[feat] = y_proj
+                
+                # 3. Plot for UI
+                with proj_cols[idx % 3]:
+                    fig_p = go.Figure()
+                    fig_p.add_trace(go.Scatter(x=national_means['year'], y=national_means[feat], name='Hist Mean', mode='markers', marker=dict(color='#2196F3')))
+                    fig_p.add_trace(go.Scatter(x=future_years, y=y_proj, name='Projected', line=dict(color='#D85A30', dash='dash')))
+                    fig_p.update_layout(title=f"{feat}<br><span style='font-size:10px'>{fit_name.upper()} (R²={r2:.2f})</span>", height=250, margin=dict(l=20, r=20, t=40, b=20), showlegend=False, template='plotly_dark')
+                    st.plotly_chart(fig_p, use_container_width=True)
+
+            # Create projected feature dataframe and apply transforms
+            X_fut_df = pd.DataFrame(proj_data)
+            # Re-apply transforms if needed
+            if 'buildings_repaired' in X_fut_df.columns: X_fut_df['log_buildings_repaired'] = np.log1p(X_fut_df['buildings_repaired'])
+            if 'buildings_per_school' in X_fut_df.columns: X_fut_df['sqrt_buildings_per_school'] = np.sqrt(X_fut_df['buildings_per_school'])
+            if 'schools_without_water' in X_fut_df.columns: X_fut_df['log_schools_without_water'] = np.log1p(X_fut_df['schools_without_water'])
+            if 'schools_without_latrine' in X_fut_df.columns: X_fut_df['log_schools_without_latrine'] = np.log1p(X_fut_df['schools_without_latrine'])
+            if 'principal_upper_sec_plus_edu' in X_fut_df.columns: X_fut_df['log_principal_upper_sec_plus_edu'] = np.log1p(X_fut_df['principal_upper_sec_plus_edu'])
+            if 'buildings_poor_roof' in X_fut_df.columns: X_fut_df['log_buildings_poor_roof'] = np.log1p(X_fut_df['buildings_poor_roof'])
+            if 'pb_fund_per_school_riel' in X_fut_df.columns: X_fut_df['log_pb_fund_per_school_riel'] = np.log1p(X_fut_df['pb_fund_per_school_riel'])
+            if 'classrooms_per_school' in X_fut_df.columns: X_fut_df['sqrt_classrooms_per_school'] = np.sqrt(X_fut_df['classrooms_per_school'])
+
             X_fut_imp = pd.DataFrame(imputer.transform(X_fut_df[feats]), columns=feats)
             X_fut_sc = scaler.transform(X_fut_imp)
 
@@ -1026,27 +1030,61 @@ elif page == "Modelling & Forecasts":
             full_X_sc = np.vstack([X_train_sc, X_val_sc])
             
             # Best model instance
-            if best_name == 'Random Forest': final_model = RandomForestRegressor(n_estimators=100, random_state=42)
-            elif best_name == 'Gradient Boosting': final_model = GradientBoostingRegressor(random_state=42)
-            elif best_name == 'XGBoost': final_model = xgb.XGBRegressor(random_state=42)
-            elif best_name == 'WOA-SVR': final_model = WOASVR(n_whales=10, max_iter=10)
-            elif best_name == 'ARIMAX': final_model = ARIMAXWrapper()
-            elif best_name == 'Ridge': final_model = Ridge(alpha=1.0)
-            else: final_model = Lasso(alpha=0.01)
-
+            best_model_def = {
+                'Random Forest':     RandomForestRegressor(n_estimators=150, max_depth=8, min_samples_leaf=4, random_state=42, n_jobs=-1),
+                'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42),
+                'XGBoost':           xgb.XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42, verbosity=0),
+                'SVR (RBF)':         SVR(kernel='rbf',    C=10, epsilon=0.1),
+                'SVR (Linear)':      SVR(kernel='linear', C=1),
+                'Ridge':             Ridge(alpha=1.0),
+                'Lasso':             Lasso(alpha=0.01, max_iter=5000),
+            }
+            final_model = best_model_def[best_name]
             use_sc = ('SVR' in best_name)
             final_model.fit(full_X_sc if use_sc else full_X_imp, full_y)
             
             raw_fut = final_model.predict(X_fut_sc if use_sc else X_fut_imp)
             y_future = np.expm1(raw_fut) if log_transform else raw_fut
 
-            # 6. Plotting
-            hist_data = processed_df.groupby('year')[target_col].mean().reset_index()
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=hist_data['year'], y=hist_data[target_col], name='Historical (Mean)', line=dict(color='#2196F3', width=3)))
-            fig.add_trace(go.Scatter(x=future_years, y=y_future, name=f'Forecast ({best_name})', line=dict(color='#F44336', width=3, dash='dash'), marker=dict(size=10)))
+            # 6. Comprehensive Plotting (Remake)
+            st.markdown("---")
+            st.subheader(f"🎯 Model Performance & Forecast: {target_label}")
             
-            fig.update_layout(title=f'Historical and Forecasted {target_label}', xaxis_title='Year', yaxis_title=target_label, template='plotly_dark')
+            # Create a 3-column dashboard using subplots
+            fig = make_subplots(
+                rows=1, cols=3,
+                subplot_titles=("R² Comparison", "Error Metrics (RMSE/MAE)", f"Forecast: {best_name}"),
+                column_widths=[0.25, 0.25, 0.5],
+                specs=[[{"type": "bar"}, {"type": "bar"}, {"type": "scatter"}]]
+            )
+
+            # Trace 1: R2 Bar
+            sorted_res = results_df.sort_values('R²')
+            fig.add_trace(go.Bar(
+                x=sorted_res['R²'], y=sorted_res['Model'], orientation='h',
+                marker=dict(color=['#D85A30' if m == best_name else '#378ADD' for m in sorted_res['Model']]),
+                name='R²'
+            ), row=1, col=1)
+
+            # Trace 2: Error Metrics
+            fig.add_trace(go.Bar(y=results_df['Model'], x=results_df['RMSE'], name='RMSE', orientation='h', marker_color='#1D9E75'), row=1, col=2)
+            fig.add_trace(go.Bar(y=results_df['Model'], x=results_df['MAE'], name='MAE', orientation='h', marker_color='#EF9F27'), row=1, col=2)
+
+            # Trace 3: The Forecast (with Predicted Values)
+            # Historical Actuals
+            hist_data = processed_df.groupby('year')[target_col].mean().reset_index()
+            fig.add_trace(go.Scatter(x=hist_data['year'], y=hist_data[target_col], name='Historical actual', line=dict(color='#2196F3', width=3), mode='lines+markers'), row=1, col=3)
+            
+            # Validation Predictions (The "Predicted Value" part)
+            best_val_preds = val_preds_dict[best_name]
+            val_df = pd.DataFrame({'year': processed_df.loc[val_mask, 'year'], 'pred': best_val_preds})
+            val_means = val_df.groupby('year')['pred'].mean().reset_index()
+            fig.add_trace(go.Scatter(x=val_means['year'], y=val_means['pred'], name='Val prediction', mode='markers', marker=dict(color='#4CAF50', size=10, symbol='diamond', line=dict(width=2, color='white'))), row=1, col=3)
+
+            # Future Forecast
+            fig.add_trace(go.Scatter(x=future_years, y=y_future, name='ML Forecast', line=dict(color='#F44336', width=3, dash='dash'), mode='lines+markers', marker=dict(size=8)), row=1, col=3)
+
+            fig.update_layout(height=500, template='plotly_dark', showlegend=True, barmode='group')
             st.plotly_chart(fig, use_container_width=True)
 
             st.markdown("---")
