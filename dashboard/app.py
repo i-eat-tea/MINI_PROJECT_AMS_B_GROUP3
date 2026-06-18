@@ -11,13 +11,76 @@ from matplotlib.patheffects import withStroke
 import seaborn as sns
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, IsolationForest
 from sklearn.linear_model import Ridge, Lasso, LinearRegression
 from sklearn.svm import SVR
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import xgboost as xgb
 import warnings
 warnings.filterwarnings('ignore')
+
+# ─── Helpers for Lag Features & Recursive Forecast ──────────────────────────
+def remove_outliers_iforest(df, contamination=0.05):
+    numeric_df = df.select_dtypes(include=['number']).dropna()
+    if numeric_df.empty: return df.copy()
+    iso = IsolationForest(contamination=contamination, random_state=42)
+    preds = iso.fit_predict(numeric_df)
+    return df.loc[numeric_df.index[preds == 1]].copy()
+
+def recursive_forecast(df_input, target, model, imputer, scaler, features, future_years=[2027, 2028], other_feature_projections=[]):
+    df_forecast = df_input.copy()
+    provinces = df_forecast['province'].unique()
+    
+    for year in future_years:
+        for prov in provinces:
+            # Ensure row exists
+            mask = (df_forecast['province'] == prov) & (df_forecast['year'] == year)
+            if not mask.any():
+                new_row = pd.DataFrame([{'province': prov, 'year': year}])
+                df_forecast = pd.concat([df_forecast, new_row], ignore_index=True)
+                mask = (df_forecast['province'] == prov) & (df_forecast['year'] == year)
+            
+            prov_data = df_forecast[df_forecast['province'] == prov].sort_values('year')
+            
+            feat_values = {}
+            for f in features:
+                if f.endswith('_lag1'):
+                    base_feat = f.replace('_lag1', '')
+                    past_df = prov_data[prov_data['year'] < year]
+                    feat_values[f] = past_df[base_feat].iloc[-1] if not past_df.empty else 0
+                elif f.endswith('_lag2'):
+                    base_feat = f.replace('_lag2', '')
+                    past_df = prov_data[prov_data['year'] < year-1]
+                    feat_values[f] = past_df[base_feat].iloc[-1] if not past_df.empty else 0
+                elif f in prov_data.columns and not pd.isna(prov_data.loc[prov_data['year'] == year, f].values[0]):
+                    feat_values[f] = prov_data.loc[prov_data['year'] == year, f].values[0]
+                else:
+                    if f in other_feature_projections:
+                        last_vals = prov_data[prov_data['year'] < year][f].dropna().tail(3).values
+                        if len(last_vals) >= 2:
+                            trend = (last_vals[-1] - last_vals[0]) / (len(last_vals) - 1)
+                            feat_values[f] = last_vals[-1] + trend
+                        elif len(last_vals) == 1:
+                            feat_values[f] = last_vals[0]
+                        else:
+                            feat_values[f] = 0
+                    else:
+                        last_val = prov_data[prov_data['year'] < year][f].dropna().iloc[-1] if not prov_data[prov_data['year'] < year][f].dropna().empty else 0
+                        feat_values[f] = last_val
+            
+            X_new = pd.DataFrame([feat_values])[features]
+            X_new_imp = pd.DataFrame(imputer.transform(X_new), columns=features)
+            # Use model class name to detect SVR for scaling
+            is_svr = 'SVR' in str(type(model))
+            X_new_final = scaler.transform(X_new_imp) if is_svr else X_new_imp
+            
+            pred = model.predict(X_new_final)[0]
+            df_forecast.loc[mask, target] = pred
+            for f, val in feat_values.items():
+                if f in df_forecast.columns and pd.isna(df_forecast.loc[mask, f].values[0]):
+                    df_forecast.loc[mask, f] = val
+                    
+    return df_forecast
 
 # ─── Helper for Feature Projection ──────────────────────────────────────────
 def _fit_candidates(x, y):
@@ -694,9 +757,10 @@ elif page == "Relationship Analysis":
 
 # --- Example Call ---
 # plot_features_grid(df_cleaned, features_list, target='enrollment_total')
-    tab1, tab2, tab3 = st.tabs(["heatmap","scatter","pairplot"])
+    tab1, tab2, tab3, tab4 = st.tabs(["heatmap","scatter","pairplot", "lag analysis"])
 
     with tab1:
+        # ... (rest of tab1 code)
         enrollment_raw = [
         "num_classrooms","wooden_rooms", "bamboo_buildings", "bamboo_rooms","schools_with_office", "schools_with_library",#Infrastructure & Buildings
         "schools_without_water", "schools_without_latrine","classroom_area_per_student","preschool_with_sport_facility",#Amenities & Environment
@@ -812,6 +876,58 @@ elif page == "Relationship Analysis":
             st.markdown("**Correlation matrix (selected features)**")
             st.dataframe(corr_sel.style.background_gradient(cmap='RdBu_r').format("{:.2f}"))
 
+    with tab4:
+        st.markdown("### Lag Feature Correlation Heatmap")
+        st.write("This heatmap shows how metrics correlate with their own values from 1 and 2 years ago (Lags). High correlation with lags (e.g. 0.90+) suggests that the metric is highly stable and predictable using recursive methods.")
+        
+        # 1. Engineering Lags for the heatmap
+        # Grouping by province and year to ensure proper shifting
+        lag_data = df.sort_values(['province', 'year']).copy()
+        
+        # Ensure target features exist
+        cols_to_lag = ['enrollment_total', 'avg_dropout_rate', 'teaching_staff_edu_qual_index']
+        
+        # Dropout Rate calculation
+        if 'avg_dropout_rate' not in lag_data.columns:
+            dropout_cols_l = [f'g{i}_dropout' for i in range(1, 13) if f'g{i}_dropout' in lag_data.columns]
+            if dropout_cols_l:
+                lag_data['avg_dropout_rate'] = lag_data[dropout_cols_l].mean(axis=1)
+            
+        # Teacher Quality calculation
+        if 'teaching_staff_edu_qual_index' not in lag_data.columns:
+            edu_levels_l = ['primary','lower_sec','upper_sec','graduate','postgrad','phd']
+            weights_l = {'primary':1,'lower_sec':2,'upper_sec':3,'graduate':4,'postgrad':5,'phd':6}
+            if 'teaching_staff_edu_primary' in lag_data.columns:
+                weighted_sum_l = sum(lag_data[f'teaching_staff_edu_{l}'] * w for l, w in weights_l.items() if f'teaching_staff_edu_{l}' in lag_data.columns)
+                total_l = lag_data[[f'teaching_staff_edu_{l}' for l in edu_levels_l if f'teaching_staff_edu_{l}' in lag_data.columns]].sum(axis=1).replace(0, pd.NA)
+                lag_data['teaching_staff_edu_qual_index'] = weighted_sum_l / total_l
+
+        for feat in cols_to_lag:
+            if feat in lag_data.columns:
+                lag_data[f'{feat}_lag1'] = lag_data.groupby('province')[feat].shift(1)
+                lag_data[f'{feat}_lag2'] = lag_data.groupby('province')[feat].shift(2)
+        
+        # Build the final list of columns for heatmap
+        cols_to_corr_l = []
+        for f in cols_to_lag:
+            if f in lag_data.columns:
+                cols_to_corr_l.extend([f, f'{f}_lag1', f'{f}_lag2'])
+        
+        if cols_to_corr_l:
+            corr_matrix_l = lag_data[cols_to_corr_l].corr()
+            
+            fig_lag = px.imshow(
+                corr_matrix_l,
+                color_continuous_scale='coolwarm',
+                zmin=-1, zmax=1,
+                aspect='auto',
+                text_auto='.2f',
+                title="Correlation: Targets vs. Lagged Features (1 & 2 Years)"
+            )
+            fig_lag.update_layout(height=700, template='plotly_dark')
+            st.plotly_chart(fig_lag, use_container_width=True)
+        else:
+            st.warning("Could not find target columns for lag analysis.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 7.5 — Modelling & Forecasts
@@ -820,10 +936,7 @@ elif page == "Modelling & Forecasts":
     st.title("🚀 Advanced Modelling & Education Forecasts")
     st.markdown("---")
     
-    st.write("""
-    This section uses a comprehensive ML pipeline to forecast key education indicators for Cambodia.
-    We evaluate multiple models (Random Forest, XGBoost, WOA-SVR, ARIMAX, etc.) to identify the most accurate predictor for each target.
-    """)
+    m_tab1, m_tab2 = st.tabs(["Standard (Feature Projection)", "Lag-Based (Recursive)"])
 
     # 1. Targets & Features Configuration
     TARGETS = {
@@ -870,8 +983,8 @@ elif page == "Modelling & Forecasts":
         edu_levels = ['primary','lower_sec','upper_sec','graduate','postgrad','phd']
         weights = {'primary':1,'lower_sec':2,'upper_sec':3,'graduate':4,'postgrad':5,'phd':6}
         if 'teaching_staff_edu_primary' in d.columns:
-            weighted_sum = sum(d[f'teaching_staff_edu_{l}'] * w for l, w in weights.items())
-            total = d[[f'teaching_staff_edu_{l}' for l in edu_levels]].sum(axis=1).replace(0, pd.NA)
+            weighted_sum = sum(d[f'teaching_staff_edu_{l}'] * w for l, w in weights.items() if f'teaching_staff_edu_{l}' in d.columns)
+            total = d[[f'teaching_staff_edu_{l}' for l in edu_levels if f'teaching_staff_edu_{l}' in d.columns]].sum(axis=1).replace(0, pd.NA)
             d['teaching_staff_edu_qual_index'] = weighted_sum / total
         
         # Handle some transformations (log/sqrt) if required by feature list
@@ -894,203 +1007,304 @@ elif page == "Modelling & Forecasts":
 
         return d
 
-    # 3. User Selection
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        target_label = st.selectbox("Select Forecast Target", list(TARGETS.keys()))
-        target_col = TARGETS[target_label]
-    with col2:
-        forecast_years = st.multiselect("Forecast Horizon", [2027, 2028, 2029, 2030], default=[2027, 2028, 2029, 2030])
+    with m_tab1:
+        st.write("""
+        This approach forecasts targets by first projecting independent features (like classrooms or population) 
+        and then using a trained model to predict the target for those projected values.
+        """)
+        # 3. User Selection
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            target_label = st.selectbox("Select Forecast Target", list(TARGETS.keys()))
+            target_col = TARGETS[target_label]
+        with col2:
+            forecast_years = st.multiselect("Forecast Horizon", [2027, 2028, 2029, 2030], default=[2027, 2028, 2029, 2030])
 
-    if st.button("Run ML Pipeline"):
-        with st.spinner(f"Training models for {target_label}..."):
-            processed_df = engineer_targets(df)
-            
-            # Simple feature mapping update for transformed cols
-            raw_feats = FEATURE_MAP[target_col]
-            final_feats = []
-            for f in raw_feats:
-                if f == 'buildings_repaired': final_feats.append('log_buildings_repaired')
-                elif f == 'buildings_per_school': final_feats.append('sqrt_buildings_per_school')
-                elif f == 'schools_without_water': final_feats.append('log_schools_without_water')
-                elif f == 'schools_without_latrine': final_feats.append('log_schools_without_latrine')
-                elif f == 'principal_upper_sec_plus_edu': final_feats.append('log_principal_upper_sec_plus_edu')
-                elif f == 'buildings_poor_roof': final_feats.append('log_buildings_poor_roof')
-                elif f == 'pb_fund_per_school_riel': final_feats.append('log_pb_fund_per_school_riel')
-                elif f == 'classrooms_per_school': final_feats.append('sqrt_classrooms_per_school')
-                else: final_feats.append(f)
-            
-            # 4. Pipeline Logic
-            # Prep Data
-            feats = [c for c in final_feats if c in processed_df.columns]
-            train_mask = processed_df['year'] <= 2023
-            val_mask = (processed_df['year'] > 2023) & (processed_df['year'] <= 2026)
-            
-            X_train_raw = processed_df.loc[train_mask, feats]
-            X_val_raw = processed_df.loc[val_mask, feats]
-            y_train = processed_df.loc[train_mask, target_col]
-            y_val = processed_df.loc[val_mask, target_col]
-
-            imputer = SimpleImputer(strategy='median')
-            X_train_imp = pd.DataFrame(imputer.fit_transform(X_train_raw), columns=feats)
-            X_val_imp = pd.DataFrame(imputer.transform(X_val_raw), columns=feats)
-
-            scaler = StandardScaler()
-            X_train_sc = scaler.fit_transform(X_train_imp)
-            X_val_sc = scaler.transform(X_val_imp)
-
-            log_transform = (target_col == 'avg_dropout_rate')
-            y_fit = np.log1p(y_train.values) if log_transform else y_train.values
-
-            models = {
-                'Random Forest':     (RandomForestRegressor(n_estimators=150, max_depth=8, min_samples_leaf=4, random_state=42, n_jobs=-1), X_train_imp, X_val_imp),
-                'Gradient Boosting': (GradientBoostingRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42),         X_train_imp, X_val_imp),
-                'XGBoost':           (xgb.XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42, verbosity=0),     X_train_imp, X_val_imp),
-                'SVR (RBF)':         (SVR(kernel='rbf',    C=10, epsilon=0.1),                                                               X_train_sc,  X_val_sc),
-                'SVR (Linear)':      (SVR(kernel='linear', C=1),                                                                             X_train_sc,  X_val_sc),
-                'Ridge':             (Ridge(alpha=1.0),                                                                                      X_train_imp, X_val_imp),
-                'Lasso':             (Lasso(alpha=0.01, max_iter=5000),                                                                      X_train_imp, X_val_imp),
-            }
-
-            records, val_preds_dict = [], {}
-            for name, (model, X_tr, X_v) in models.items():
-                try:
-                    model.fit(X_tr, y_fit)
-                    raw_pred = model.predict(X_v)
-                    y_pred = np.expm1(raw_pred) if log_transform else raw_pred
-                    records.append({
-                        'Model': name,
-                        'R²': r2_score(y_val, y_pred),
-                        'RMSE': np.sqrt(mean_squared_error(y_val, y_pred)),
-                        'MAE': mean_absolute_error(y_val, y_pred)
-                    })
-                    val_preds_dict[name] = y_pred
-                except Exception as e:
-                    st.error(f"Model {name} failed: {e}")
-
-            results_df = pd.DataFrame(records).sort_values('R²', ascending=False).reset_index(drop=True)
-            
-            # Display Metrics
-            st.subheader("📊 Model Comparison Dashboard")
-            st.dataframe(results_df.style.highlight_max(subset=['R²'], color='#4CAF50').format({"R²": "{:.4f}", "RMSE": "{:.2f}", "MAE": "{:.2f}"}))
-            
-            best_name = results_df.iloc[0]['Model']
-            st.success(f"✅ Recommended Model: **{best_name}**")
-
-            # 5. Final Forecast (Robust Feature Projection)
-            st.markdown("---")
-            st.subheader(f"📈 Input Feature Projections for {target_label}")
-            st.write("Before forecasting the target, we project the necessary input features using best-fit trends (Linear, Log, Exp, or Sqrt).")
-            
-            future_years = np.array(forecast_years)
-            
-            # Group historical data by year for projection fitting
-            national_means = processed_df.groupby('year')[raw_feats].mean().reset_index()
-            
-            # Setup columns for projection plots
-            proj_cols = st.columns(3)
-            
-            # Logic to store projected values
-            proj_data = {'year': future_years}
-            
-            for idx, feat in enumerate(raw_feats):
-                # 1. Fit best curve for this feature
-                fit_name, pred_fn, r2 = _fit_candidates(national_means['year'].values, national_means[feat].values)
+        if st.button("Run ML Pipeline"):
+            with st.spinner(f"Training models for {target_label}..."):
+                processed_df = engineer_targets(df)
                 
-                # 2. Project future values
-                y_proj = pred_fn(future_years)
-                proj_data[feat] = y_proj
+                # Simple feature mapping update for transformed cols
+                raw_feats = FEATURE_MAP[target_col]
+                final_feats = []
+                for f in raw_feats:
+                    if f == 'buildings_repaired': final_feats.append('log_buildings_repaired')
+                    elif f == 'buildings_per_school': final_feats.append('sqrt_buildings_per_school')
+                    elif f == 'schools_without_water': final_feats.append('log_schools_without_water')
+                    elif f == 'schools_without_latrine': final_feats.append('log_schools_without_latrine')
+                    elif f == 'principal_upper_sec_plus_edu': final_feats.append('log_principal_upper_sec_plus_edu')
+                    elif f == 'buildings_poor_roof': final_feats.append('log_buildings_poor_roof')
+                    elif f == 'pb_fund_per_school_riel': final_feats.append('log_pb_fund_per_school_riel')
+                    elif f == 'classrooms_per_school': final_feats.append('sqrt_classrooms_per_school')
+                    else: final_feats.append(f)
                 
-                # 3. Plot for UI
-                with proj_cols[idx % 3]:
-                    fig_p = go.Figure()
-                    fig_p.add_trace(go.Scatter(x=national_means['year'], y=national_means[feat], name='Hist Mean', mode='markers', marker=dict(color='#2196F3')))
-                    fig_p.add_trace(go.Scatter(x=future_years, y=y_proj, name='Projected', line=dict(color='#D85A30', dash='dash')))
-                    fig_p.update_layout(title=f"{feat}<br><span style='font-size:10px'>{fit_name.upper()} (R²={r2:.2f})</span>", height=250, margin=dict(l=20, r=20, t=40, b=20), showlegend=False, template='plotly_dark')
-                    st.plotly_chart(fig_p, use_container_width=True)
+                # 4. Pipeline Logic
+                # Prep Data
+                feats = [c for c in final_feats if c in processed_df.columns]
+                train_mask = processed_df['year'] <= 2023
+                val_mask = (processed_df['year'] > 2023) & (processed_df['year'] <= 2026)
+                
+                X_train_raw = processed_df.loc[train_mask, feats]
+                X_val_raw = processed_df.loc[val_mask, feats]
+                y_train = processed_df.loc[train_mask, target_col]
+                y_val = processed_df.loc[val_mask, target_col]
 
-            # Create projected feature dataframe and apply transforms
-            X_fut_df = pd.DataFrame(proj_data)
-            # Re-apply transforms if needed
-            if 'buildings_repaired' in X_fut_df.columns: X_fut_df['log_buildings_repaired'] = np.log1p(X_fut_df['buildings_repaired'])
-            if 'buildings_per_school' in X_fut_df.columns: X_fut_df['sqrt_buildings_per_school'] = np.sqrt(X_fut_df['buildings_per_school'])
-            if 'schools_without_water' in X_fut_df.columns: X_fut_df['log_schools_without_water'] = np.log1p(X_fut_df['schools_without_water'])
-            if 'schools_without_latrine' in X_fut_df.columns: X_fut_df['log_schools_without_latrine'] = np.log1p(X_fut_df['schools_without_latrine'])
-            if 'principal_upper_sec_plus_edu' in X_fut_df.columns: X_fut_df['log_principal_upper_sec_plus_edu'] = np.log1p(X_fut_df['principal_upper_sec_plus_edu'])
-            if 'buildings_poor_roof' in X_fut_df.columns: X_fut_df['log_buildings_poor_roof'] = np.log1p(X_fut_df['buildings_poor_roof'])
-            if 'pb_fund_per_school_riel' in X_fut_df.columns: X_fut_df['log_pb_fund_per_school_riel'] = np.log1p(X_fut_df['pb_fund_per_school_riel'])
-            if 'classrooms_per_school' in X_fut_df.columns: X_fut_df['sqrt_classrooms_per_school'] = np.sqrt(X_fut_df['classrooms_per_school'])
+                imputer = SimpleImputer(strategy='median')
+                X_train_imp = pd.DataFrame(imputer.fit_transform(X_train_raw), columns=feats)
+                X_val_imp = pd.DataFrame(imputer.transform(X_val_raw), columns=feats)
 
-            X_fut_imp = pd.DataFrame(imputer.transform(X_fut_df[feats]), columns=feats)
-            X_fut_sc = scaler.transform(X_fut_imp)
+                scaler = StandardScaler()
+                X_train_sc = scaler.fit_transform(X_train_imp)
+                X_val_sc = scaler.transform(X_val_imp)
 
-            # Re-train best model on full data
-            full_X_imp = pd.concat([X_train_imp, X_val_imp])
-            full_y = np.log1p(pd.concat([y_train, y_val])) if log_transform else pd.concat([y_train, y_val])
-            full_X_sc = np.vstack([X_train_sc, X_val_sc])
-            
-            # Best model instance
-            best_model_def = {
-                'Random Forest':     RandomForestRegressor(n_estimators=150, max_depth=8, min_samples_leaf=4, random_state=42, n_jobs=-1),
-                'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42),
-                'XGBoost':           xgb.XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42, verbosity=0),
-                'SVR (RBF)':         SVR(kernel='rbf',    C=10, epsilon=0.1),
-                'SVR (Linear)':      SVR(kernel='linear', C=1),
-                'Ridge':             Ridge(alpha=1.0),
-                'Lasso':             Lasso(alpha=0.01, max_iter=5000),
-            }
-            final_model = best_model_def[best_name]
-            use_sc = ('SVR' in best_name)
-            final_model.fit(full_X_sc if use_sc else full_X_imp, full_y)
-            
-            raw_fut = final_model.predict(X_fut_sc if use_sc else X_fut_imp)
-            y_future = np.expm1(raw_fut) if log_transform else raw_fut
+                log_transform = (target_col == 'avg_dropout_rate')
+                y_fit = np.log1p(y_train.values) if log_transform else y_train.values
 
-            # 6. Comprehensive Plotting (Remake)
-            st.markdown("---")
-            st.subheader(f"🎯 Model Performance & Forecast: {target_label}")
-            
-            # Create a 3-column dashboard using subplots
-            fig = make_subplots(
-                rows=1, cols=3,
-                subplot_titles=("R² Comparison", "Error Metrics (RMSE/MAE)", f"Forecast: {best_name}"),
-                column_widths=[0.25, 0.25, 0.5],
-                specs=[[{"type": "bar"}, {"type": "bar"}, {"type": "scatter"}]]
-            )
+                models = {
+                    'Random Forest':     (RandomForestRegressor(n_estimators=150, max_depth=8, min_samples_leaf=4, random_state=42, n_jobs=-1), X_train_imp, X_val_imp),
+                    'Gradient Boosting': (GradientBoostingRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42),         X_train_imp, X_val_imp),
+                    'XGBoost':           (xgb.XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42, verbosity=0),     X_train_imp, X_val_imp),
+                    'SVR (RBF)':         (SVR(kernel='rbf',    C=10, epsilon=0.1),                                                               X_train_sc,  X_val_sc),
+                    'SVR (Linear)':      (SVR(kernel='linear', C=1),                                                                             X_train_sc,  X_val_sc),
+                    'Ridge':             (Ridge(alpha=1.0),                                                                                      X_train_imp, X_val_imp),
+                    'Lasso':             (Lasso(alpha=0.01, max_iter=5000),                                                                      X_train_imp, X_val_imp),
+                }
 
-            # Trace 1: R2 Bar
-            sorted_res = results_df.sort_values('R²')
-            fig.add_trace(go.Bar(
-                x=sorted_res['R²'], y=sorted_res['Model'], orientation='h',
-                marker=dict(color=['#D85A30' if m == best_name else '#378ADD' for m in sorted_res['Model']]),
-                name='R²'
-            ), row=1, col=1)
+                records, val_preds_dict = [], {}
+                for name, (model, X_tr, X_v) in models.items():
+                    try:
+                        model.fit(X_tr, y_fit)
+                        raw_pred = model.predict(X_v)
+                        y_pred = np.expm1(raw_pred) if log_transform else raw_pred
+                        records.append({
+                            'Model': name,
+                            'R²': r2_score(y_val, y_pred),
+                            'RMSE': np.sqrt(mean_squared_error(y_val, y_pred)),
+                            'MAE': mean_absolute_error(y_val, y_pred)
+                        })
+                        val_preds_dict[name] = y_pred
+                    except Exception as e:
+                        st.error(f"Model {name} failed: {e}")
 
-            # Trace 2: Error Metrics
-            fig.add_trace(go.Bar(y=results_df['Model'], x=results_df['RMSE'], name='RMSE', orientation='h', marker_color='#1D9E75'), row=1, col=2)
-            fig.add_trace(go.Bar(y=results_df['Model'], x=results_df['MAE'], name='MAE', orientation='h', marker_color='#EF9F27'), row=1, col=2)
+                results_df = pd.DataFrame(records).sort_values('R²', ascending=False).reset_index(drop=True)
+                
+                # Display Metrics
+                st.subheader("📊 Model Comparison Dashboard")
+                st.dataframe(results_df.style.highlight_max(subset=['R²'], color='#4CAF50').format({"R²": "{:.4f}", "RMSE": "{:.2f}", "MAE": "{:.2f}"}))
+                
+                best_name = results_df.iloc[0]['Model']
+                st.success(f"✅ Recommended Model: **{best_name}**")
 
-            # Trace 3: The Forecast (with Predicted Values)
-            # Historical Actuals
-            hist_data = processed_df.groupby('year')[target_col].mean().reset_index()
-            fig.add_trace(go.Scatter(x=hist_data['year'], y=hist_data[target_col], name='Historical actual', line=dict(color='#2196F3', width=3), mode='lines+markers'), row=1, col=3)
-            
-            # Validation Predictions (The "Predicted Value" part)
-            best_val_preds = val_preds_dict[best_name]
-            val_df = pd.DataFrame({'year': processed_df.loc[val_mask, 'year'], 'pred': best_val_preds})
-            val_means = val_df.groupby('year')['pred'].mean().reset_index()
-            fig.add_trace(go.Scatter(x=val_means['year'], y=val_means['pred'], name='Val prediction', mode='markers', marker=dict(color='#4CAF50', size=10, symbol='diamond', line=dict(width=2, color='white'))), row=1, col=3)
+                # 5. Final Forecast (Robust Feature Projection)
+                st.markdown("---")
+                st.subheader(f"📈 Input Feature Projections for {target_label}")
+                st.write("Before forecasting the target, we project the necessary input features using best-fit trends (Linear, Log, Exp, or Sqrt).")
+                
+                future_years = np.array(forecast_years)
+                
+                # Group historical data by year for projection fitting
+                national_means = processed_df.groupby('year')[raw_feats].mean().reset_index()
+                
+                # Setup columns for projection plots
+                proj_cols = st.columns(3)
+                
+                # Logic to store projected values
+                proj_data = {'year': future_years}
+                
+                for idx, feat in enumerate(raw_feats):
+                    # 1. Fit best curve for this feature
+                    fit_name, pred_fn, r2 = _fit_candidates(national_means['year'].values, national_means[feat].values)
+                    
+                    # 2. Project future values
+                    y_proj = pred_fn(future_years)
+                    proj_data[feat] = y_proj
+                    
+                    # 3. Plot for UI
+                    with proj_cols[idx % 3]:
+                        fig_p = go.Figure()
+                        fig_p.add_trace(go.Scatter(x=national_means['year'], y=national_means[feat], name='Hist Mean', mode='markers', marker=dict(color='#2196F3')))
+                        fig_p.add_trace(go.Scatter(x=future_years, y=y_proj, name='Projected', line=dict(color='#D85A30', dash='dash')))
+                        fig_p.update_layout(title=f"{feat}<br><span style='font-size:10px'>{fit_name.upper()} (R²={r2:.2f})</span>", height=250, margin=dict(l=20, r=20, t=40, b=20), showlegend=False, template='plotly_dark')
+                        st.plotly_chart(fig_p, use_container_width=True)
 
-            # Future Forecast
-            fig.add_trace(go.Scatter(x=future_years, y=y_future, name='ML Forecast', line=dict(color='#F44336', width=3, dash='dash'), mode='lines+markers', marker=dict(size=8)), row=1, col=3)
+                # Create projected feature dataframe and apply transforms
+                X_fut_df = pd.DataFrame(proj_data)
+                # Re-apply transforms if needed
+                if 'buildings_repaired' in X_fut_df.columns: X_fut_df['log_buildings_repaired'] = np.log1p(X_fut_df['buildings_repaired'])
+                if 'buildings_per_school' in X_fut_df.columns: X_fut_df['sqrt_buildings_per_school'] = np.sqrt(X_fut_df['buildings_per_school'])
+                if 'schools_without_water' in X_fut_df.columns: X_fut_df['log_schools_without_water'] = np.log1p(X_fut_df['schools_without_water'])
+                if 'schools_without_latrine' in X_fut_df.columns: X_fut_df['log_schools_without_latrine'] = np.log1p(X_fut_df['schools_without_latrine'])
+                if 'principal_upper_sec_plus_edu' in X_fut_df.columns: X_fut_df['log_principal_upper_sec_plus_edu'] = np.log1p(X_fut_df['principal_upper_sec_plus_edu'])
+                if 'buildings_poor_roof' in X_fut_df.columns: X_fut_df['log_buildings_poor_roof'] = np.log1p(X_fut_df['buildings_poor_roof'])
+                if 'pb_fund_per_school_riel' in X_fut_df.columns: X_fut_df['log_pb_fund_per_school_riel'] = np.log1p(X_fut_df['pb_fund_per_school_riel'])
+                if 'classrooms_per_school' in X_fut_df.columns: X_fut_df['sqrt_classrooms_per_school'] = np.sqrt(X_fut_df['classrooms_per_school'])
 
-            fig.update_layout(height=500, template='plotly_dark', showlegend=True, barmode='group')
-            st.plotly_chart(fig, use_container_width=True)
+                X_fut_imp = pd.DataFrame(imputer.transform(X_fut_df[feats]), columns=feats)
+                X_fut_sc = scaler.transform(X_fut_imp)
 
-            st.markdown("---")
-            st.subheader(f"📅 {target_label} Forecast Values")
-            forecast_df = pd.DataFrame({'Year': future_years, 'Forecast': y_future})
-            st.table(forecast_df.style.format({"Forecast": "{:.2f}"}))
+                # Re-train best model on full data
+                full_X_imp = pd.concat([X_train_imp, X_val_imp])
+                full_y = np.log1p(pd.concat([y_train, y_val])) if log_transform else pd.concat([y_train, y_val])
+                full_X_sc = np.vstack([X_train_sc, X_val_sc])
+                
+                # Best model definition
+                best_model_def = {
+                    'Random Forest':     RandomForestRegressor(n_estimators=150, max_depth=8, min_samples_leaf=4, random_state=42, n_jobs=-1),
+                    'Gradient Boosting': GradientBoostingRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42),
+                    'XGBoost':           xgb.XGBRegressor(n_estimators=150, max_depth=4, learning_rate=0.05, random_state=42, verbosity=0),
+                    'SVR (RBF)':         SVR(kernel='rbf',    C=10, epsilon=0.1),
+                    'SVR (Linear)':      SVR(kernel='linear', C=1),
+                    'Ridge':             Ridge(alpha=1.0),
+                    'Lasso':             Lasso(alpha=0.01, max_iter=5000),
+                }
+                final_model = best_model_def[best_name]
+                use_sc = ('SVR' in best_name)
+                final_model.fit(full_X_sc if use_sc else full_X_imp, full_y)
+                
+                raw_fut = final_model.predict(X_fut_sc if use_sc else X_fut_imp)
+                y_future = np.expm1(raw_fut) if log_transform else raw_fut
+
+                # 6. Comprehensive Plotting
+                st.markdown("---")
+                st.subheader(f"🎯 Model Performance & Forecast: {target_label}")
+                
+                fig = make_subplots(
+                    rows=1, cols=3,
+                    subplot_titles=("R² Comparison", "Error Metrics (RMSE/MAE)", f"Forecast: {best_name}"),
+                    column_widths=[0.25, 0.25, 0.5],
+                    specs=[[{"type": "bar"}, {"type": "bar"}, {"type": "scatter"}]]
+                )
+
+                sorted_res = results_df.sort_values('R²')
+                fig.add_trace(go.Bar(x=sorted_res['R²'], y=sorted_res['Model'], orientation='h', marker=dict(color=['#D85A30' if m == best_name else '#378ADD' for m in sorted_res['Model']]), name='R²'), row=1, col=1)
+                fig.add_trace(go.Bar(y=results_df['Model'], x=results_df['RMSE'], name='RMSE', orientation='h', marker_color='#1D9E75'), row=1, col=2)
+                fig.add_trace(go.Bar(y=results_df['Model'], x=results_df['MAE'], name='MAE', orientation='h', marker_color='#EF9F27'), row=1, col=2)
+
+                hist_data = processed_df.groupby('year')[target_col].mean().reset_index()
+                fig.add_trace(go.Scatter(x=hist_data['year'], y=hist_data[target_col], name='Historical actual', line=dict(color='#2196F3', width=3), mode='lines+markers'), row=1, col=3)
+                
+                best_val_preds = val_preds_dict[best_name]
+                val_df = pd.DataFrame({'year': processed_df.loc[val_mask, 'year'], 'pred': best_val_preds})
+                val_means = val_df.groupby('year')['pred'].mean().reset_index()
+                fig.add_trace(go.Scatter(x=val_means['year'], y=val_means['pred'], name='Val prediction', mode='markers', marker=dict(color='#4CAF50', size=10, symbol='diamond', line=dict(width=2, color='white'))), row=1, col=3)
+
+                fig.add_trace(go.Scatter(x=future_years, y=y_future, name='ML Forecast', line=dict(color='#F44336', width=3, dash='dash'), mode='lines+markers', marker=dict(size=8)), row=1, col=3)
+
+                fig.update_layout(height=500, template='plotly_dark', showlegend=True, barmode='group')
+                st.plotly_chart(fig, use_container_width=True)
+
+                st.markdown("---")
+                st.subheader(f"📅 {target_label} Forecast Values")
+                forecast_df = pd.DataFrame({'Year': future_years, 'Forecast': y_future})
+                st.table(forecast_df.style.format({"Forecast": "{:.2f}"}))
+
+    with m_tab2:
+        st.subheader("Recursive Forecasting using Lag Features")
+        st.write("This approach predicts the future by using predicted values as inputs for subsequent years. It uses the previous 2 years of data (Lags) as primary predictors, which is often more accurate for educational trends.")
+        
+        # UI for Lag-Based
+        col1_l, col2_l = st.columns(2)
+        with col1_l:
+            target_label_l = st.selectbox("Select Target (Lag Model)", list(TARGETS.keys()), key='lag_target')
+            target_col_l = TARGETS[target_label_l]
+        with col2_l:
+            st.info("Currently forecasting recursively for 2027 and 2028.")
+        
+        if st.button("Run Lag-Based Pipeline"):
+            with st.spinner("Processing lag features & training models..."):
+                # 1. Prep Data
+                df_l = engineer_targets(df)
+                df_l = remove_outliers_iforest(df_l)
+                df_l = df_l.sort_values(['province', 'year'])
+                
+                # Define feature sets
+                lag_feat_sets = {
+                    'enrollment_total': ['enrollment_total_lag1', 'enrollment_total_lag2', 'total_staff_total', 'num_classrooms'],
+                    'avg_dropout_rate': ['avg_dropout_rate_lag1', 'avg_dropout_rate_lag2', 'avg_transition_rate', 'teaching_staff_edu_qual_index'],
+                    'teaching_staff_edu_qual_index': ['teaching_staff_edu_qual_index_lag1', 'teaching_staff_edu_qual_index_lag2', 'principal_avg_service_years', 'pb_fund_per_school_riel']
+                }
+                feats_l = lag_feat_sets[target_col_l]
+                
+                # Create lags
+                for f in ['enrollment_total', 'avg_dropout_rate', 'teaching_staff_edu_qual_index']:
+                    df_l[f'{f}_lag1'] = df_l.groupby('province')[f].shift(1)
+                    df_l[f'{f}_lag2'] = df_l.groupby('province')[f].shift(2)
+                
+                df_train_ready = df_l.dropna(subset=[f'{target_col_l}_lag2'])
+                train_mask = df_train_ready['year'] <= 2024
+                val_mask = (df_train_ready['year'] >= 2025) & (df_train_ready['year'] <= 2026)
+                
+                X_tr = df_train_ready.loc[train_mask, feats_l]
+                y_tr = df_train_ready.loc[train_mask, target_col_l]
+                X_v = df_train_ready.loc[val_mask, feats_l]
+                y_v = df_train_ready.loc[val_mask, target_col_l]
+                
+                imp = SimpleImputer(strategy='median')
+                X_tr_imp = pd.DataFrame(imp.fit_transform(X_tr), columns=feats_l)
+                X_v_imp = pd.DataFrame(imp.transform(X_v), columns=feats_l)
+                
+                scl = StandardScaler()
+                X_tr_sc = scl.fit_transform(X_tr_imp)
+                X_v_sc = scl.transform(X_v_imp)
+                
+                models_l = {
+                    'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
+                    'XGBoost':       xgb.XGBRegressor(n_estimators=100, random_state=42),
+                    'Ridge':         Ridge(alpha=1.0),
+                    'Lasso':         Lasso(alpha=0.1),
+                    'GBR':           GradientBoostingRegressor(n_estimators=100, random_state=42),
+                    'SVR (RBF)':     SVR(kernel='rbf', C=10, epsilon=0.1),
+                    'SVR (Linear)':  SVR(kernel='linear', C=1)
+                }
+                
+                recs_l, v_preds_l = [], {}
+                for name, model in models_l.items():
+                    try:
+                        X_fit = X_tr_sc if 'SVR' in name else X_tr_imp
+                        X_pred = X_v_sc if 'SVR' in name else X_v_imp
+                        model.fit(X_fit, y_tr)
+                        y_p = model.predict(X_pred)
+                        recs_l.append({'Model': name, 'R2': round(r2_score(y_v, y_p), 4), 'MAE': round(mean_absolute_error(y_v, y_p), 4), 'RMSE': round(np.sqrt(mean_squared_error(y_v, y_p)), 4)})
+                        v_preds_l[name] = y_p
+                    except: continue
+                
+                res_df_l = pd.DataFrame(recs_l).sort_values('R2', ascending=False).reset_index(drop=True)
+                best_name_l = res_df_l.iloc[0]['Model']
+                best_model_l = models_l[best_name_l]
+                
+                st.subheader("📊 Lag-Based Model Comparison")
+                st.dataframe(res_df_l.style.highlight_max(subset=['R2'], color='#4CAF50'))
+                
+                other_f = ['total_staff_total', 'num_classrooms', 'avg_transition_rate', 'principal_avg_service_years', 'pb_fund_per_school_riel']
+                df_forecasted = recursive_forecast(df_l, target_col_l, best_model_l, imp, scl, feats_l, future_years=[2027, 2028], other_feature_projections=other_f)
+                
+                st.markdown("---")
+                st.subheader(f"🎯 Lag-Based Analysis: {target_label_l}")
+                
+                fig_l = make_subplots(
+                    rows=1, cols=3,
+                    subplot_titles=("R² Comparison", "Error Metrics", "Recursive Forecast Trend"),
+                    column_widths=[0.25, 0.25, 0.5],
+                    specs=[[{"type": "bar"}, {"type": "bar"}, {"type": "scatter"}]]
+                )
+                
+                s_res = res_df_l.sort_values('R2')
+                fig_l.add_trace(go.Bar(x=s_res['R2'], y=s_res['Model'], orientation='h', marker_color=['#D85A30' if m == best_name_l else '#378ADD' for m in s_res['Model']], name='R²'), row=1, col=1)
+                fig_l.add_trace(go.Bar(y=res_df_l['Model'], x=res_df_l['RMSE'], name='RMSE', orientation='h', marker_color='#1D9E75'), row=1, col=2)
+                fig_l.add_trace(go.Bar(y=res_df_l['Model'], x=res_df_l['MAE'], name='MAE', orientation='h', marker_color='#EF9F27'), row=1, col=2)
+                
+                hist_l = df_forecasted[df_forecasted['year'] <= 2026].groupby('year')[target_col_l].mean().reset_index()
+                proj_l = df_forecasted[df_forecasted['year'] >= 2026].groupby('year')[target_col_l].mean().reset_index()
+                
+                fig_l.add_trace(go.Scatter(x=hist_l['year'], y=hist_l[target_col_l], name='Hist/Actual', mode='lines+markers', line=dict(color='#378ADD', width=3)), row=1, col=3)
+                fig_l.add_trace(go.Scatter(x=proj_l['year'], y=proj_l[target_col_l], name='Recursive Projection', mode='lines+markers', line=dict(color='#D85A30', width=3, dash='dash')), row=1, col=3)
+                
+                fig_l.update_layout(height=500, template='plotly_dark', showlegend=True, barmode='group')
+                st.plotly_chart(fig_l, use_container_width=True)
+                
+                st.info("💡 The lag-based approach captures historical inertia, making it highly effective for metrics like enrollment and teacher quality which don't change drastically year-over-year.")
+
+# ══════════════════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE 8 — Long-term Trends (appendix)
