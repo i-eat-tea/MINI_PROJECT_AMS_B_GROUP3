@@ -918,7 +918,7 @@ elif page == "Relationship Analysis":
             
             fig_lag = px.imshow(
                 corr_matrix_l,
-                color_continuous_scale='coolwarm',
+                color_continuous_scale='rdbu',
                 zmin=-1, zmax=1,
                 aspect='auto',
                 text_auto='.2f',
